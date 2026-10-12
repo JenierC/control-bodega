@@ -75,15 +75,15 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     
     consecutivo = obtener_siguiente_consecutivo()
     
-    # 1. Asignar fecha sin hora para no activar la alerta de error en celda A5
+    # 1. Asignar fecha y FORZAR el formato Día/Mes/Año (dd/mm/yyyy)
     ws['N7'] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    ws['N7'].number_format = 'dd/mm/yyyy'
     
-    # 2. Asignar consecutivo y departamento oficial
+    # 2. Consecutivo y departamento
     ws['N8'] = consecutivo
     ws['D8'] = "Departamento de Servicios Generales B"
     
-    # 3. LIMPIAR RIGUROSAMENTE FILAS 12 A 37 USANDO CADENA VACÍA ""
-    # (Esto vacía completamente las celdas de prueba sin tocar la fórmula de la columna E)
+    # 3. Limpiar filas 12 a 37
     for r in range(12, 38):
         ws.cell(row=r, column=1, value="")
         ws.cell(row=r, column=2, value="")
@@ -95,7 +95,6 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     
-    # Automigración de estructura si la tabla es antigua
     cursor.execute("PRAGMA table_info(articulos)")
     cols_existentes = [row[1] for row in cursor.fetchall()]
     for col in ['partida', 'subpartida', 'codigo', 'subcodigo']:
@@ -109,8 +108,6 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     mapa_master = cargar_mapa_master()
     
     fila_inicio = 12
-    
-    # 4. Escribir únicamente los artículos solicitados
     for idx, sol_id in enumerate(solicitud_ids):
         if fila_inicio + idx > 37:
             break
@@ -126,7 +123,6 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
         if item:
             cod_grupal, descripcion, cantidad, partida, subpartida, codigo, subcodigo = item
             
-            # Obtener códigos de presupuesto desde el catálogo Maestro o fallback
             if not (partida and subpartida and codigo):
                 if cod_grupal in mapa_master:
                     partida = mapa_master[cod_grupal]['partida']
