@@ -11,7 +11,7 @@ import os
 from setup_inicial import instalar_sistema
 from exporter_bys import generar_formulario_oficial_bys
 from pdf_signature import exportar_excel_a_pdf, verificar_firma_digital_adobe
-from mailer import enviar_correo_con_pdf_adjunto
+from mailer import enviar_correo_con_pdf_adjunto, enviar_correo_pedimento_firmado
 
 EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
 MAX_INACTIVIDAD = 300  # 5 minutos de inactividad
@@ -349,8 +349,21 @@ if st.session_state['rol'] == "ADMIN":
                     """)
                     conn.commit()
                     conn.close()
+
+                    # Envío de correo automático con el PDF firmado al Encargado de Bodega
+                    exito_envio, msg_envio = enviar_correo_pedimento_firmado(
+                        consecutivo=consecutivo_ext,
+                        ruta_pdf_firmado=ruta_guardado,
+                        detalle_firma=detalle_firma
+                    )
+
                     st.balloons()
-                    st.success("¡Pedimento procesado exitosamente en el sistema de bodega!")
+                    st.success(f"¡Pedimento #{consecutivo_ext} procesado y autorizado exitosamente en bodega!")
+                    
+                    if exito_envio:
+                        st.info("📩 El pedimento firmado ha sido enviado por correo a **agomez@dinadeco.go.cr** (Encargado de Bodega) con copia a **jcamacho@dinadeco.go.cr** y **agonzalez@dinadeco.go.cr**.")
+                    else:
+                        st.warning(f"⚠️ El pedimento fue autorizado en el sistema, pero ocurrió un aviso con el correo: {msg_envio}")
             else:
                 st.error(f"❌ Error de Validación: {detalle_firma}")
 
