@@ -8,10 +8,9 @@ EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
 EXCEL_PEDIMENTOS = "Pedimentos de Departamento de Servicios Generales.xlk"
 
 def instalar_sistema():
-    print("🚀 Iniciando instalación y configuración del Sistema de Bodega DINADECO...")
+    print("🚀 Iniciando instalación del Sistema de Bodega DINADECO...")
     
     os.makedirs("pedimentos_generados", exist_ok=True)
-    print("  ✓ Carpeta 'pedimentos_generados/' creada.")
 
     conn = sqlite3.connect(BD_PATH)
     cursor = conn.cursor()
@@ -22,7 +21,11 @@ def instalar_sistema():
             descripcion TEXT NOT NULL,
             categoria TEXT,
             frecuencia_entrega TEXT,
-            dias_vida_util INTEGER
+            dias_vida_util INTEGER,
+            partida TEXT,
+            subpartida TEXT,
+            codigo TEXT,
+            subcodigo TEXT
         )
     ''')
 
@@ -87,7 +90,7 @@ def instalar_sistema():
 
     cursor.execute("INSERT OR IGNORE INTO control_consecutivos (anio, ultimo_numero) VALUES (2026, 50)")
 
-    # Insertar usuarios administradores (Jenier y Gabriela) con clave inicial 'admin123'
+    # Administradores por defecto
     hash_admin = hashlib.sha256("admin123".encode()).hexdigest()
     cursor.execute("INSERT OR IGNORE INTO funcionarios (nombre, puesto, espacio_asignado, username, password, rol, estado) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                    ("Jenier Camacho Picado", "Supervisor", "Oficina Central", "jenier", hash_admin, "ADMIN", "ACTIVO"))
@@ -105,10 +108,17 @@ def instalar_sistema():
             for _, row in df_master.iterrows():
                 frec = str(row['Frecuencia Sugerida de Entrega']).strip()
                 dias = mapa_dias.get(frec, 30)
+                
+                partida = str(row['Partida']).strip() if pd.notna(row['Partida']) else "29905"
+                subpartida = str(row['Sub-partida']).strip() if pd.notna(row['Sub-partida']) else "01900"
+                codigo = str(row['Código']).strip() if pd.notna(row['Código']) else "000000"
+                subcodigo = str(row['sub-código']).strip() if pd.notna(row['sub-código']) else "00"
+
                 cursor.execute('''
-                    INSERT OR REPLACE INTO articulos (codigo_grupal, descripcion, categoria, frecuencia_entrega, dias_vida_util)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (str(row['Grupal']), row['Descripción de Artículo'], row['Categoría de Bodega'], frec, dias))
+                    INSERT OR REPLACE INTO articulos 
+                    (codigo_grupal, descripcion, categoria, frecuencia_entrega, dias_vida_util, partida, subpartida, codigo, subcodigo)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (str(row['Grupal']), str(row['Descripción de Artículo']).strip(), row['Categoría de Bodega'], frec, dias, partida, subpartida, codigo, subcodigo))
             
             df_pisos = pd.read_excel(EXCEL_MAESTRO, sheet_name='Limpieza_por_Piso')
             for _, row in df_pisos.iterrows():
@@ -120,9 +130,8 @@ def instalar_sistema():
                     str(row['Código']), row['Artículo'], row['Total Mensual'],
                     row['Piso 1 (30%)'], row['Piso 2 (40%)'], row['Piso 3 (30%)'], row['Criterio Operativo']
                 ))
-            print("  ✓ Catálogo de 238 artículos y cuotas por piso cargados.")
         except Exception as e:
-            print("  ⚠ Alerta cargando hojas del Excel Maestro:", e)
+            print("Alerta cargando Excel Maestro:", e)
 
     if os.path.exists(EXCEL_PEDIMENTOS):
         try:
@@ -132,13 +141,11 @@ def instalar_sistema():
                     INSERT OR REPLACE INTO departamentos (nombre, iniciales, jefatura)
                     VALUES (?, ?, ?)
                 ''', (str(row['DEPARTAMENTOS']).strip(), str(row['INICIALES ']).strip(), str(row['JEFATURAS o Autorizados']).strip()))
-            print("  ✓ Lista oficial de Departamentos y Jefaturas cargada.")
         except Exception as e:
-            print("  ⚠ Alerta cargando hoja DEPARTAMENTOS:", e)
+            print("Alerta cargando DEPARTAMENTOS:", e)
 
     conn.commit()
     conn.close()
-    print("✅ ¡Instalación inicial completada con éxito!")
 
 if __name__ == "__main__":
     instalar_sistema()
