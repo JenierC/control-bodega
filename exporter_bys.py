@@ -75,7 +75,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     
     consecutivo = obtener_siguiente_consecutivo()
     
-    # 1. Asignar fecha y FORZAR el formato Día/Mes/Año (dd/mm/yyyy)
+    # 1. Asignar fecha y forzar formato Día/Mes/Año (dd/mm/yyyy)
     ws['N7'] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     ws['N7'].number_format = 'dd/mm/yyyy'
     
@@ -83,7 +83,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     ws['N8'] = consecutivo
     ws['D8'] = "Departamento de Servicios Generales B"
     
-    # 3. Limpiar filas 12 a 37
+    # 3. Limpiar filas 12 a 37 (Columnas A, B, C, D, N, O)
     for r in range(12, 38):
         ws.cell(row=r, column=1, value="")
         ws.cell(row=r, column=2, value="")
@@ -140,8 +140,9 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
             ws.cell(row=fila_actual, column=2, value=str(subpartida))
             ws.cell(row=fila_actual, column=3, value=str(codigo))
             ws.cell(row=fila_actual, column=4, value=str(subcodigo))
+            # ÚNICAMENTE asignamos la cantidad solicitada (Columna 14 = Solic.)
             ws.cell(row=fila_actual, column=14, value=int(cantidad))
-            ws.cell(row=fila_actual, column=15, value=int(cantidad))
+            # La columna 15 (Desp.) se mantiene explícitamente vacía ""
 
     conn.close()
 
