@@ -46,28 +46,43 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     elif os.path.exists("Pedimentos de Departamento de Servicios Generales.xlsx"):
         plantilla = "Pedimentos de Departamento de Servicios Generales.xlsx"
     else:
-        raise FileNotFoundError(f"No se encontró la plantilla oficial en formato Excel.")
+        raise FileNotFoundError("No se encontró la plantilla oficial en formato Excel.")
 
     wb = openpyxl.load_workbook(plantilla)
     ws = wb['Pedimento']
     
     consecutivo = obtener_siguiente_consecutivo()
-    fecha_actual = datetime.now()
     
+    # 1. Asignar fecha en formato datetime exacto
+    ws['N7'] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # 2. Consecutivo y departamento
     ws['N8'] = consecutivo
-    ws['N7'] = fecha_actual.strftime("%d/%m/%Y")
-    ws['D8'] = nombre_departamento
+    ws['D8'] = "Departamento de Servicios Generales B"
+    
+    # 3. LIMPIAR COMPLETAMENTE LAS FILAS 12 A 37 (Elimina artículos viejos de prueba)
+    for r in range(12, 38):
+        ws.cell(row=r, column=1, value=None)
+        ws.cell(row=r, column=2, value=None)
+        ws.cell(row=r, column=3, value=None)
+        ws.cell(row=r, column=4, value=None)
+        ws.cell(row=r, column=5, value=None)
+        ws.cell(row=r, column=14, value=None)
+        ws.cell(row=r, column=15, value=None)
     
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     
+    # 4. Escribir únicamente los artículos solicitados
     fila_inicio = 12
+    total_items = len(solicitud_ids)
+    
     for idx, sol_id in enumerate(solicitud_ids):
         if fila_inicio + idx > 37:
             break
             
         cursor.execute('''
-            SELECT a.codigo_grupal, a.descripcion, s.cantidad 
+            SELECT a.partida, a.subpartida, a.codigo, a.subcodigo, a.descripcion, s.cantidad 
             FROM solicitudes s
             JOIN articulos a ON s.articulo_id = a.codigo_grupal
             WHERE s.id = ?
@@ -75,27 +90,24 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
         
         item = cursor.fetchone()
         if item:
-            codigo_grupal, descripcion, cantidad = item
-            
-            partida = codigo_grupal[:5] if len(codigo_grupal) >= 5 else codigo_grupal
-            sub_partida = codigo_grupal[5:10] if len(codigo_grupal) >= 10 else ""
-            codigo = codigo_grupal[10:16] if len(codigo_grupal) >= 16 else ""
-            sub_codigo = codigo_grupal[16:] if len(codigo_grupal) > 16 else "00"
+            partida, subpartida, codigo, subcodigo, descripcion, cantidad = item
             
             fila_actual = fila_inicio + idx
-            ws.cell(row=fila_actual, column=1, value=partida)
-            ws.cell(row=fila_actual, column=2, value=sub_partida)
-            ws.cell(row=fila_actual, column=3, value=codigo)
-            ws.cell(row=fila_actual, column=4, value=sub_codigo)
-            ws.cell(row=fila_actual, column=5, value=descripcion)
-            ws.cell(row=fila_actual, column=14, value=cantidad)
-            ws.cell(row=fila_actual, column=15, value=cantidad)
+            ws.cell(row=fila_actual, column=1, value=str(partida or "29905"))
+            ws.cell(row=fila_actual, column=2, value=str(subpartida or "01040"))
+            ws.cell(row=fila_actual, column=3, value=str(codigo or "000060"))
+            ws.cell(row=fila_actual, column=4, value=str(subcodigo or "00"))
+            ws.cell(row=fila_actual, column=5, value=str(descripcion))
+            ws.cell(row=fila_actual, column=14, value=int(cantidad))
+            ws.cell(row=fila_actual, column=15, value=int(cantidad))
     
+    # Marcar marca de fin de lista UL (Última Línea) inmediatamente después del último ítem
+    fila_ul = fila_inicio + total_items
+    if fila_ul <= 37:
+        ws.cell(row=fila_ul, column=5, value="***** UL *****")
+
     conn.close()
-    
-    ws['A46'] = f"Aprobado digitalmente por: {nombre_jefatura}"
-    ws['A47'] = f"Hash de Firma: {hash_firma[:16]}... | Fecha: {fecha_actual.strftime('%Y-%m-%d %H:%M')}"
-    
+
     os.makedirs("pedimentos_generados", exist_ok=True)
     nombre_archivo_salida = f"pedimentos_generados/Pedimento_{consecutivo}.xlsx"
     wb.save(nombre_archivo_salida)
