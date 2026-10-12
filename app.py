@@ -320,4 +320,55 @@ if st.session_state['rol'] == "ADMIN":
                     st.balloons()
                     st.success("¡Pedimento procesado exitosamente en el sistema de bodega!")
             else:
-                st.
+                st.error(f"❌ Error de Validación: {detalle_firma}")
+
+    # TAB 3: INFORMES
+    with tab_informes:
+        st.header("📊 Informes Generales y Diagnóstico")
+        conn = sqlite3.connect("database.db")
+        df_entregas = pd.read_sql_query('''
+            SELECT f.nombre AS Funcionario, f.puesto AS Puesto, f.espacio_asignado AS Ubicacion, a.descripcion AS Articulo, 
+                   s.cantidad AS Cantidad, s.fecha_aprobacion AS Fecha_Entrega, s.firmado_por AS Aprobador
+            FROM solicitudes s 
+            JOIN funcionarios f ON s.funcionario_id = f.id 
+            JOIN articulos a ON s.articulo_id = a.codigo_grupal
+            WHERE s.estado = 'APROBADO_FIRMA_DIGITAL'
+        ''', conn)
+        conn.close()
+        
+        st.dataframe(df_entregas, use_container_width=True)
+
+    # TAB 4: APROBACIÓN DE USUARIOS
+    with tab_usuarios:
+        st.header("✅ Aprobación de Cuentas de Usuarios")
+        st.write("Gestione las solicitudes de acceso al sistema.")
+        
+        conn = sqlite3.connect("database.db")
+        df_inactivos = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username FROM funcionarios WHERE estado='INACTIVO'", conn)
+        
+        if df_inactivos.empty:
+            st.info("No hay usuarios pendientes de aprobación.")
+        else:
+            st.dataframe(df_inactivos, use_container_width=True)
+            user_id = st.number_input("ID del usuario a gestionar:", min_value=1, step=1)
+            
+            col1, col2 = st.columns(2)
+            if col1.button("✅ Aprobar Acceso", type="primary"):
+                cursor = conn.cursor()
+                cursor.execute("UPDATE funcionarios SET estado='ACTIVO' WHERE id=?", (user_id,))
+                conn.commit()
+                conn.close()
+                sync_usuarios_excel()
+                st.success(f"Usuario ID {user_id} aprobado e incorporado al Excel Maestro.")
+                st.rerun()
+            
+            if col2.button("❌ Rechazar / Eliminar"):
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM funcionarios WHERE id=?", (user_id,))
+                conn.commit()
+                conn.close()
+                sync_usuarios_excel()
+                st.error(f"Solicitud ID {user_id} eliminada.")
+                st.rerun()
+        if not df_inactivos.empty:
+            conn.close()
