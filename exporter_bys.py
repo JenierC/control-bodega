@@ -30,7 +30,7 @@ def obtener_siguiente_consecutivo(anio_actual=None):
         cursor.execute("UPDATE control_consecutivos SET ultimo_numero = ? WHERE anio = ?", (siguiente_num, anio_actual))
     else:
         siguiente_num = 51
-        cursor.execute("INSERT INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (siguiente_num, 51))
+        cursor.execute("INSERT INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, 51))
         
     conn.commit()
     conn.close()
@@ -75,27 +75,27 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     
     consecutivo = obtener_siguiente_consecutivo()
     
-    # 1. Asignar fecha en formato datetime con hora cero para evitar la alerta roja
+    # 1. Asignar fecha sin hora para no activar la alerta de error en celda A5
     ws['N7'] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     
-    # 2. Consecutivo y departamento
+    # 2. Asignar consecutivo y departamento oficial
     ws['N8'] = consecutivo
     ws['D8'] = "Departamento de Servicios Generales B"
     
-    # 3. Limpiar filas 12 a 37 para no arrastrar líneas sobrantes de prueba
+    # 3. LIMPIAR RIGUROSAMENTE FILAS 12 A 37 USANDO CADENA VACÍA ""
+    # (Esto vacía completamente las celdas de prueba sin tocar la fórmula de la columna E)
     for r in range(12, 38):
-        ws.cell(row=r, column=1, value=None)
-        ws.cell(row=r, column=2, value=None)
-        ws.cell(row=r, column=3, value=None)
-        ws.cell(row=r, column=4, value=None)
-        ws.cell(row=r, column=5, value=None)
-        ws.cell(row=r, column=14, value=None)
-        ws.cell(row=r, column=15, value=None)
+        ws.cell(row=r, column=1, value="")
+        ws.cell(row=r, column=2, value="")
+        ws.cell(row=r, column=3, value="")
+        ws.cell(row=r, column=4, value="")
+        ws.cell(row=r, column=14, value="")
+        ws.cell(row=r, column=15, value="")
     
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     
-    # 4. Automigración de estructura si la base de datos es previa
+    # Automigración de estructura si la tabla es antigua
     cursor.execute("PRAGMA table_info(articulos)")
     cols_existentes = [row[1] for row in cursor.fetchall()]
     for col in ['partida', 'subpartida', 'codigo', 'subcodigo']:
@@ -109,8 +109,8 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     mapa_master = cargar_mapa_master()
     
     fila_inicio = 12
-    total_items = len(solicitud_ids)
     
+    # 4. Escribir únicamente los artículos solicitados
     for idx, sol_id in enumerate(solicitud_ids):
         if fila_inicio + idx > 37:
             break
@@ -126,7 +126,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
         if item:
             cod_grupal, descripcion, cantidad, partida, subpartida, codigo, subcodigo = item
             
-            # Si los valores en BD vienen nulos, obtenerlos del catálogo Maestro o fallback
+            # Obtener códigos de presupuesto desde el catálogo Maestro o fallback
             if not (partida and subpartida and codigo):
                 if cod_grupal in mapa_master:
                     partida = mapa_master[cod_grupal]['partida']
@@ -144,14 +144,8 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
             ws.cell(row=fila_actual, column=2, value=str(subpartida))
             ws.cell(row=fila_actual, column=3, value=str(codigo))
             ws.cell(row=fila_actual, column=4, value=str(subcodigo))
-            ws.cell(row=fila_actual, column=5, value=str(descripcion))
             ws.cell(row=fila_actual, column=14, value=int(cantidad))
             ws.cell(row=fila_actual, column=15, value=int(cantidad))
-    
-    # Insertar marca ***** UL ***** (Última Línea) al terminar los ítems
-    fila_ul = fila_inicio + total_items
-    if fila_ul <= 37:
-        ws.cell(row=fila_ul, column=5, value="***** UL *****")
 
     conn.close()
 
