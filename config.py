@@ -1,12 +1,12 @@
 JEFE_CREDENCIALES = {
-    "jenier.camacho@dinadeco.go.cr": {
+    "jcamacho@dinadeco.go.cr": {
         "nombre": "Jenier Camacho Picado",
-        "rol": "Supervisor",
+        "rol": "ADMIN",
         "pin": "2026"
     },
-    "gabriela.gutierrez@dinadeco.go.cr": {
+    "ggutierrez@dinadeco.go.cr": {
         "nombre": "Gabriela Gutiérrez Araya",
-        "rol": "Supervisora",
+        "rol": "ADMIN",
         "pin": "5678"
     }
 }
@@ -14,10 +14,11 @@ JEFE_CREDENCIALES = {
 SMTP_CONFIG = {
     "server": "smtp.office365.com",
     "port": 587,
-    "user": "bodega@dinadeco.go.cr",
-    "password": "TU_CONTRASEÑA",
-    "destinatarios_notificacion": [
-        "yancy@dinadeco.go.cr",
-        "jenier.camacho@dinadeco.go.cr"
+    "user": "bodega@dinadeco.go.cr",  # Correo desde donde sale la notificación
+    "password": "TU_CONTRASEÑA_AQUI", # Contraseña o contraseña de aplicación
+    "destinatario_principal": "agonzalez@dinadeco.go.cr",
+    "destinatarios_cc": [
+        "ggutierrez@dinadeco.go.cr",
+        "jcamacho@dinadeco.go.cr"
     ]
 }
