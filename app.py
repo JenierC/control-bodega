@@ -126,6 +126,35 @@ def sync_usuarios_excel():
     except Exception as e:
         st.error(f"Error sincronizando Excel Maestro: {e}")
 
+def obtener_ultimo_consecutivo_db():
+    anio_actual = datetime.now().year
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS control_consecutivos (
+            anio INTEGER PRIMARY KEY,
+            ultimo_numero INTEGER NOT NULL
+        )
+    """)
+    cursor.execute("SELECT ultimo_numero FROM control_consecutivos WHERE anio = ?", (anio_actual,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 50
+
+def fijar_ultimo_consecutivo_db(nuevo_num):
+    anio_actual = datetime.now().year
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS control_consecutivos (
+            anio INTEGER PRIMARY KEY,
+            ultimo_numero INTEGER NOT NULL
+        )
+    """)
+    cursor.execute("INSERT OR REPLACE INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, nuevo_num))
+    conn.commit()
+    conn.close()
+
 # -------------------------------------------------------------------
 # PANTALLA DE LOGIN Y REGISTRO
 # -------------------------------------------------------------------
@@ -170,16 +199,20 @@ if st.session_state['usuario_actual'] is None:
     st.stop()
 
 # -------------------------------------------------------------------
-# NAVEGACIÓN Y PESTAÑAS SEGÚN ROL
+# NAVEGACIÓN Y BOTÓN DE CIERRE DE SESIÓN DESTACADO
 # -------------------------------------------------------------------
-st.sidebar.write(f"👤 Usuario: **{st.session_state['usuario_actual']}**")
+st.sidebar.markdown("### 👤 Sesión Activa")
+st.sidebar.write(f"Usuario: **{st.session_state['usuario_actual']}**")
 st.sidebar.write(f"Rol: **{st.session_state['rol']}**")
-if st.sidebar.button("Cerrar Sesión"):
+
+if st.sidebar.button("🔴 Cerrar Sesión", type="primary", use_container_width=True):
     logout()
 
+st.sidebar.markdown("---")
+
 if st.session_state['rol'] == "ADMIN":
-    tabs = st.tabs(["📝 1. Pedimentos (Hasta 10 ítems)", "✍️ 2. Firma/Aprobación PDF", "📊 3. Informes", "✅ 4. Aprobar Usuarios"])
-    tab_pedimentos, tab_firma, tab_informes, tab_usuarios = tabs
+    tabs = st.tabs(["📝 1. Pedimentos", "✍️ 2. Firma/Aprobación PDF", "📊 3. Informes", "✅ 4. Aprobar Usuarios", "⚙️ 5. Control Master"])
+    tab_pedimentos, tab_firma, tab_informes, tab_usuarios, tab_master = tabs
 else:
     tabs = st.tabs(["📝 1. Mis Pedimentos (Hasta 10 ítems)"])
     tab_pedimentos = tabs[0]
@@ -350,7 +383,6 @@ if st.session_state['rol'] == "ADMIN":
                     conn.commit()
                     conn.close()
 
-                    # Envío de correo automático con el PDF firmado al Encargado de Bodega
                     exito_envio, msg_envio = enviar_correo_pedimento_firmado(
                         consecutivo=consecutivo_ext,
                         ruta_pdf_firmado=ruta_guardado,
@@ -417,3 +449,54 @@ if st.session_state['rol'] == "ADMIN":
                 st.rerun()
         if not df_inactivos.empty:
             conn.close()
+
+    # TAB 5: CONTROL MASTER Y REINICIO DE SISTEMA
+    with tab_master:
+        st.header("⚙️ Control Master del Sistema")
+        st.write("Herramientas exclusivas para el usuario Administrador Master.")
+        
+        st.markdown("---")
+        st.subheader("1. Ajuste Manual de Consecutivo de Pedimentos")
+        
+        num_actual = obtener_ultimo_consecutivo_db()
+        anio_actual = datetime.now().year
+        
+        st.info(f"El último pedimento registrado en el sistema fue el **#{num_actual:03d}-{anio_actual}**. El siguiente pedimento a generar será el **#{(num_actual + 1):03d}-{anio_actual}**.")
+        
+        nuevo_ultimo = st.number_input(
+            "Indique el ÚLTIMO número de pedimento generado (Ejemplo: ingrese 50 para que el siguiente pedimento sea el #051-2026):", 
+            min_value=0, 
+            max_value=999, 
+            value=num_actual, 
+            step=1
+        )
+        
+        if st.button("💾 Guardar Consecutivo de Pedimentos", type="primary"):
+            fijar_ultimo_consecutivo_db(int(nuevo_ultimo))
+            siguiente = int(nuevo_ultimo) + 1
+            st.success(f"¡Consecutivo actualizado! El próximo pedimento generado será el **#{siguiente:03d}-{anio_actual}**.")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("2. Limpieza de Pedimentos de Prueba")
+        st.write("Elimina las solicitudes de prueba generadas hasta el momento, manteniendo los usuarios y el catálogo intactos.")
+        
+        if st.button("🗑️ Borrar Historial de Solicitudes y Pedimentos de Prueba"):
+            conn = sqlite3.connect("database.db")
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM solicitudes")
+            conn.commit()
+            conn.close()
+            st.success("¡Se ha limpiado el historial de pedimentos de prueba exitosamente!")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("3. Reinicio Completo del Sistema")
+        st.warning("⚠️ **Atención:** Esta opción recreará la base de datos completa a su estado inicial de fábrica.")
+        
+        confirmar_reset = st.checkbox("Confirmo que deseo reinstalar el sistema por completo")
+        if confirmar_reset:
+            if st.button("🔥 Reinstalar Base de Datos Completa", type="primary"):
+                instalar_sistema()
+                st.success("¡El sistema ha sido reinstalado a su estado de fábrica!")
+                st.rerun()
