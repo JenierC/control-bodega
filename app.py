@@ -14,7 +14,7 @@ from pdf_signature import exportar_excel_a_pdf, verificar_firma_digital_adobe
 from mailer import enviar_correo_con_pdf_adjunto
 
 EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
-MAX_INACTIVIDAD = 300  # Tiempo límite de inactividad: 5 minutos (en segundos)
+MAX_INACTIVIDAD = 300  # 5 minutos de inactividad
 
 # ==========================================
 # VERIFICACIÓN AUTOMÁTICA DE BASE DE DATOS
@@ -35,7 +35,6 @@ verificar_base_datos()
 
 st.set_page_config(page_title="Bodega DINADECO", page_icon="📦", layout="wide")
 
-# Inicialización de variables en Session State
 if 'usuario_actual' not in st.session_state:
     st.session_state['usuario_actual'] = None
     st.session_state['rol'] = None
@@ -45,9 +44,6 @@ if 'carrito' not in st.session_state:
 if 'ultimo_pedimento' not in st.session_state:
     st.session_state['ultimo_pedimento'] = None
 
-# ==========================================
-# GESTIÓN DE SESIÓN PERSISTENTE Y EXPIRACIÓN
-# ==========================================
 now = time.time()
 
 def logout_inactividad():
@@ -58,7 +54,6 @@ def logout_inactividad():
     st.session_state['ultimo_pedimento'] = None
     st.query_params.clear()
 
-# Restaurar sesión si el usuario recarga la página (F5) dentro del límite de 5 minutos
 if st.session_state['usuario_actual'] is None:
     if 'u' in st.query_params and 't' in st.query_params:
         try:
@@ -74,7 +69,6 @@ if st.session_state['usuario_actual'] is None:
         except Exception:
             st.query_params.clear()
 else:
-    # Si la sesión está activa, verificar inactividad y actualizar el temporizador
     if 't' in st.query_params:
         try:
             last_t = float(st.query_params['t'])
@@ -103,7 +97,6 @@ def login(user, pwd):
             st.session_state['usuario_actual'] = result[1]
             st.session_state['rol'] = result[2]
             
-            # Guardar token en URL para resistir refresco de pantalla
             st.query_params['u'] = result[1]
             st.query_params['r'] = result[2]
             st.query_params['fid'] = str(result[0])
@@ -199,8 +192,12 @@ with tab_pedimentos:
     
     if st.session_state['ultimo_pedimento']:
         ped = st.session_state['ultimo_pedimento']
-        st.success(f"🎉 ¡Pedimento enviado con éxito a la Jefatura! Consecutivo asignado: **#{ped['consecutivo']}**")
-        st.info("📩 El documento ha sido enviado por correo para la respectiva Firma Digital.")
+        st.success(f"🎉 ¡Pedimento procesado con éxito! Consecutivo asignado: **#{ped['consecutivo']}**")
+        
+        if ped.get("exito_mail"):
+            st.info("📩 El documento ha sido enviado por correo para la respectiva Firma Digital.")
+        else:
+            st.error(f"⚠️ **Atención:** Ocurrió un inconveniente al enviar el correo automático: **{ped.get('msg_mail')}**")
         st.markdown("---")
 
     conn = sqlite3.connect("database.db")
@@ -270,7 +267,7 @@ with tab_pedimentos:
                 exportar_excel_a_pdf(ruta_excel, ruta_pdf)
                 conn.close()
 
-                enviar_correo_con_pdf_adjunto(
+                exito_mail, msg_mail = enviar_correo_con_pdf_adjunto(
                     consecutivo=consecutivo, 
                     lista_items=st.session_state['carrito'], 
                     solicitante=st.session_state['usuario_actual'], 
@@ -281,7 +278,9 @@ with tab_pedimentos:
                 )
 
                 st.session_state['ultimo_pedimento'] = {
-                    "consecutivo": consecutivo
+                    "consecutivo": consecutivo,
+                    "exito_mail": exito_mail,
+                    "msg_mail": msg_mail
                 }
                 st.session_state['carrito'] = []
                 st.rerun()
