@@ -150,16 +150,11 @@ else:
 with tab_pedimentos:
     st.header("📦 Solicitud de Insumos")
     
+    # 🔴 CAMBIO: Solo mostramos el mensaje de éxito. Eliminamos el botón de descarga del solicitante.
     if st.session_state['ultimo_pedimento']:
         ped = st.session_state['ultimo_pedimento']
-        st.success(f"🎉 ¡Pedimento enviado con éxito! Consecutivo asignado: **#{ped['consecutivo']}**")
-        st.download_button(
-            label=f"📄 Descargar Pedimento #{ped['consecutivo']} (PDF para Firma Digital)",
-            data=ped['bytes_pdf'],
-            file_name=ped['nombre_pdf'],
-            mime="application/pdf",
-            type="primary"
-        )
+        st.success(f"🎉 ¡Pedimento enviado con éxito a la Jefatura! Consecutivo asignado: **#{ped['consecutivo']}**")
+        st.info("📩 El documento ha sido enviado por correo para la respectiva Firma Digital.")
         st.markdown("---")
 
     conn = sqlite3.connect("database.db")
@@ -210,7 +205,7 @@ with tab_pedimentos:
                 st.rerun()
             
             justificacion_global = st.text_area("Justificación del pedido:")
-            if st.button("🚀 Enviar Pedimento Completo a Bodega", type="primary"):
+            if st.button("🚀 Enviar Pedimento Completo a Jefatura", type="primary"):
                 conn = sqlite3.connect("database.db")
                 cursor = conn.cursor()
                 
@@ -229,7 +224,6 @@ with tab_pedimentos:
                 exportar_excel_a_pdf(ruta_excel, ruta_pdf)
                 conn.close()
 
-                # Envío de correo a Jefatura
                 enviar_correo_con_pdf_adjunto(
                     consecutivo=consecutivo, 
                     lista_items=st.session_state['carrito'], 
@@ -240,15 +234,8 @@ with tab_pedimentos:
                     justificacion=justificacion_global
                 )
 
-                bytes_pdf = b""
-                if os.path.exists(ruta_pdf):
-                    with open(ruta_pdf, "rb") as f_pdf:
-                        bytes_pdf = f_pdf.read()
-
                 st.session_state['ultimo_pedimento'] = {
-                    "consecutivo": consecutivo,
-                    "bytes_pdf": bytes_pdf,
-                    "nombre_pdf": f"Pedimento_{consecutivo}.pdf"
+                    "consecutivo": consecutivo
                 }
                 st.session_state['carrito'] = []
                 st.rerun()
