@@ -6,11 +6,32 @@ import hashlib
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 import os
+
+# Importar la rutina de instalación inicial
+from setup_inicial import instalar_sistema
 from exporter_bys import generar_formulario_oficial_bys
 from pdf_signature import exportar_excel_a_pdf, verificar_firma_digital_adobe
 from mailer import enviar_correo_con_pdf_adjunto
 
 EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
+
+# ==========================================
+# VERIFICACIÓN AUTOMÁTICA DE BASE DE DATOS
+# ==========================================
+def verificar_base_datos():
+    if not os.path.exists("database.db"):
+        instalar_sistema()
+    else:
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='funcionarios'")
+        tabla_existe = cursor.fetchone()
+        conn.close()
+        if not tabla_existe:
+            instalar_sistema()
+
+# Ejecutar verificación al arrancar
+verificar_base_datos()
 
 st.set_page_config(page_title="Bodega DINADECO", page_icon="📦", layout="wide")
 
@@ -49,7 +70,6 @@ def logout():
     st.rerun()
 
 def sync_usuarios_excel():
-    """Sincroniza la tabla de SQLite con la hoja USUARIOS del Excel Maestro"""
     conn = sqlite3.connect("database.db")
     df_users = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username, rol, estado FROM funcionarios", conn)
     conn.close()
@@ -135,7 +155,8 @@ with tab_pedimentos:
     
     cursor = conn.cursor()
     cursor.execute("SELECT espacio_asignado FROM funcionarios WHERE id=?", (st.session_state['func_id'],))
-    piso_asignado = cursor.fetchone()[0]
+    res_piso = cursor.fetchone()
+    piso_asignado = res_piso[0] if res_piso else "Oficina General"
     conn.close()
 
     colA, colB = st.columns([1, 2])
