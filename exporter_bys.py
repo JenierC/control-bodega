@@ -2,8 +2,10 @@ import openpyxl
 import sqlite3
 from datetime import datetime
 import os
+import shutil
 
-PLANTILLA_BYS = "Pedimentos de Departamento de Servicios Generales.xlk"
+PLANTILLA_XLK = "Pedimentos de Departamento de Servicios Generales.xlk"
+PLANTILLA_XLSX = "Pedimentos_de_Departamento_de_Servicios_Generales.xlsx"
 
 def obtener_siguiente_consecutivo(anio_actual=None):
     if not anio_actual:
@@ -36,13 +38,16 @@ def obtener_siguiente_consecutivo(anio_actual=None):
 
 
 def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_jefatura, hash_firma):
-    if not os.path.exists(PLANTILLA_BYS):
-        if os.path.exists("Pedimentos de Departamento de Servicios Generales.xlsx"):
-            plantilla = "Pedimentos de Departamento de Servicios Generales.xlsx"
-        else:
-            raise FileNotFoundError(f"No se encuentra la plantilla oficial: {PLANTILLA_BYS}")
+    # Garantizar el uso de la extensión .xlsx requerida por openpyxl
+    if os.path.exists(PLANTILLA_XLSX):
+        plantilla = PLANTILLA_XLSX
+    elif os.path.exists(PLANTILLA_XLK):
+        shutil.copy(PLANTILLA_XLK, PLANTILLA_XLSX)
+        plantilla = PLANTILLA_XLSX
+    elif os.path.exists("Pedimentos de Departamento de Servicios Generales.xlsx"):
+        plantilla = "Pedimentos de Departamento de Servicios Generales.xlsx"
     else:
-        plantilla = PLANTILLA_BYS
+        raise FileNotFoundError(f"No se encontró la plantilla oficial en formato Excel.")
 
     wb = openpyxl.load_workbook(plantilla)
     ws = wb['Pedimento']
