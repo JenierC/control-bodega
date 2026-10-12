@@ -28,7 +28,7 @@ def obtener_siguiente_consecutivo(anio_actual=None):
         siguiente_num = row[0] + 1
         cursor.execute("UPDATE control_consecutivos SET ultimo_numero = ? WHERE anio = ?", (siguiente_num, anio_actual))
     else:
-        siguiente_num = 51  # Inicia en el consecutivo 051
+        siguiente_num = 51
         cursor.execute("INSERT INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, siguiente_num))
         
     conn.commit()
@@ -38,7 +38,6 @@ def obtener_siguiente_consecutivo(anio_actual=None):
 
 
 def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_jefatura, hash_firma):
-    # Garantizar el uso de la extensión .xlsx requerida por openpyxl
     if os.path.exists(PLANTILLA_XLSX):
         plantilla = PLANTILLA_XLSX
     elif os.path.exists(PLANTILLA_XLK):
@@ -81,13 +80,14 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
             partida = codigo_grupal[:5] if len(codigo_grupal) >= 5 else codigo_grupal
             sub_partida = codigo_grupal[5:10] if len(codigo_grupal) >= 10 else ""
             codigo = codigo_grupal[10:16] if len(codigo_grupal) >= 16 else ""
-            sub_codigo = codigo_grupal[16:] if len(codigo_grupal) > 16 else "0"
+            sub_codigo = codigo_grupal[16:] if len(codigo_grupal) > 16 else "00"
             
             fila_actual = fila_inicio + idx
             ws.cell(row=fila_actual, column=1, value=partida)
             ws.cell(row=fila_actual, column=2, value=sub_partida)
             ws.cell(row=fila_actual, column=3, value=codigo)
             ws.cell(row=fila_actual, column=4, value=sub_codigo)
+            ws.cell(row=fila_actual, column=5, value=descripcion)
             ws.cell(row=fila_actual, column=14, value=cantidad)
             ws.cell(row=fila_actual, column=15, value=cantidad)
     
