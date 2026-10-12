@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime
+import time
 import hashlib
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
@@ -13,6 +14,7 @@ from pdf_signature import exportar_excel_a_pdf, verificar_firma_digital_adobe
 from mailer import enviar_correo_con_pdf_adjunto
 
 EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
+MAX_INACTIVIDAD = 300  # Tiempo límite de inactividad: 5 minutos (en segundos)
 
 # ==========================================
 # VERIFICACIÓN AUTOMÁTICA DE BASE DE DATOS
@@ -33,6 +35,7 @@ verificar_base_datos()
 
 st.set_page_config(page_title="Bodega DINADECO", page_icon="📦", layout="wide")
 
+# Inicialización de variables en Session State
 if 'usuario_actual' not in st.session_state:
     st.session_state['usuario_actual'] = None
     st.session_state['rol'] = None
@@ -41,6 +44,48 @@ if 'carrito' not in st.session_state:
     st.session_state['carrito'] = []
 if 'ultimo_pedimento' not in st.session_state:
     st.session_state['ultimo_pedimento'] = None
+
+# ==========================================
+# GESTIÓN DE SESIÓN PERSISTENTE Y EXPIRACIÓN
+# ==========================================
+now = time.time()
+
+def logout_inactividad():
+    st.session_state['usuario_actual'] = None
+    st.session_state['rol'] = None
+    st.session_state['func_id'] = None
+    st.session_state['carrito'] = []
+    st.session_state['ultimo_pedimento'] = None
+    st.query_params.clear()
+
+# Restaurar sesión si el usuario recarga la página (F5) dentro del límite de 5 minutos
+if st.session_state['usuario_actual'] is None:
+    if 'u' in st.query_params and 't' in st.query_params:
+        try:
+            last_t = float(st.query_params['t'])
+            if (now - last_t) <= MAX_INACTIVIDAD:
+                st.session_state['usuario_actual'] = st.query_params['u']
+                st.session_state['rol'] = st.query_params.get('r', 'BASICO')
+                st.session_state['func_id'] = int(st.query_params.get('fid', 0))
+                st.query_params['t'] = str(int(now))
+            else:
+                logout_inactividad()
+                st.warning("⏱️ Su sesión ha expirado por inactividad (más de 5 minutos). Por favor inicie sesión de nuevo.")
+        except Exception:
+            st.query_params.clear()
+else:
+    # Si la sesión está activa, verificar inactividad y actualizar el temporizador
+    if 't' in st.query_params:
+        try:
+            last_t = float(st.query_params['t'])
+            if (now - last_t) > MAX_INACTIVIDAD:
+                logout_inactividad()
+                st.warning("⏱️ Su sesión se ha cerrado por inactividad de 5 minutos.")
+                st.rerun()
+            else:
+                st.query_params['t'] = str(int(now))
+        except Exception:
+            pass
 
 def login(user, pwd):
     hash_pwd = hashlib.sha256(pwd.encode()).hexdigest()
@@ -57,16 +102,18 @@ def login(user, pwd):
             st.session_state['func_id'] = result[0]
             st.session_state['usuario_actual'] = result[1]
             st.session_state['rol'] = result[2]
+            
+            # Guardar token en URL para resistir refresco de pantalla
+            st.query_params['u'] = result[1]
+            st.query_params['r'] = result[2]
+            st.query_params['fid'] = str(result[0])
+            st.query_params['t'] = str(int(time.time()))
             st.rerun()
     else:
         st.error("Usuario o contraseña incorrectos.")
 
 def logout():
-    st.session_state['usuario_actual'] = None
-    st.session_state['rol'] = None
-    st.session_state['func_id'] = None
-    st.session_state['carrito'] = []
-    st.session_state['ultimo_pedimento'] = None
+    logout_inactividad()
     st.rerun()
 
 def sync_usuarios_excel():
@@ -150,7 +197,6 @@ else:
 with tab_pedimentos:
     st.header("📦 Solicitud de Insumos")
     
-    # 🔴 CAMBIO: Solo mostramos el mensaje de éxito. Eliminamos el botón de descarga del solicitante.
     if st.session_state['ultimo_pedimento']:
         ped = st.session_state['ultimo_pedimento']
         st.success(f"🎉 ¡Pedimento enviado con éxito a la Jefatura! Consecutivo asignado: **#{ped['consecutivo']}**")
