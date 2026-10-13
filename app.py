@@ -140,18 +140,63 @@ def inyectar_temporizador_inactividad():
     components.html(js_codigo, height=0, width=0)
 
 # -------------------------------------------------------------------
-# OCULTAR ÚNICAMENTE LA BARRA DERECHA (SHARE, GITHUB, MENÚ) A USUARIOS BÁSICOS
-# SIN TOCAR EL HEADER NI EL BOTÓN DE EXPANSIÓN LATERAL (>>)
+# OCULTAR BARRA DE DESARROLLADOR A USUARIOS BÁSICOS
+# GARANTIZANDO QUE LA FLECHA (>>) SIEMPRE ESTÉ 100% VISIBLE Y FUNCIONAL
 # -------------------------------------------------------------------
 if st.session_state['rol'] != "ADMIN":
     st.markdown("""
         <style>
-        /* Oculta únicamente el grupo de botones de la esquina superior derecha */
+        /* 1. ASEGURAR QUE EL ENCABEZADO EXISTA Y NO ESTÉ COLAPSADO */
+        header, [data-testid="stHeader"], .stAppHeader {
+            display: block !important;
+            visibility: visible !important;
+            height: 3.5rem !important;
+            background: transparent !important;
+        }
+
+        /* 2. OCULTAR EXCLUSIVAMENTE LA BARRA DE HERRAMIENTAS DERECHA (Share, GitHub, Editar, Estrella, Menú) */
         [data-testid="stToolbar"] {
+            display: none !important;
+            visibility: hidden !important;
+        }
+        .stDeployButton {
+            display: none !important;
+        }
+        #MainMenu {
             display: none !important;
         }
         footer {
             display: none !important;
+        }
+
+        /* 3. FORZAR LA VISIBILIDAD DE LA FLECHA (>>) EN LA ESQUINA SUPERIOR IZQUIERDA */
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="collapsedControl"],
+        button[aria-label="Expand sidebar"],
+        button[data-testid="stSidebarCollapseButton"] {
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            position: fixed !important;
+            top: 0.6rem !important;
+            left: 0.8rem !important;
+            z-index: 9999999 !important;
+        }
+
+        [data-testid="stSidebarCollapsedControl"] button,
+        [data-testid="collapsedControl"] button {
+            display: flex !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+
+        [data-testid="stSidebarCollapsedControl"] svg,
+        [data-testid="collapsedControl"] svg,
+        button[aria-label="Expand sidebar"] svg {
+            display: block !important;
+            visibility: visible !important;
+            fill: #00bcd4 !important;
+            stroke: #00bcd4 !important;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -244,9 +289,6 @@ def limpiar_historial_y_archivos():
             except Exception:
                 pass
 
-# -------------------------------------------------------------------
-# PANTALLA DE LOGIN Y REGISTRO
-# -------------------------------------------------------------------
 if st.session_state['usuario_actual'] is None:
     tab_login, tab_registro = st.tabs(["🔑 Iniciar Sesión", "📝 Solicitar Acceso (Nuevo Usuario)"])
     
