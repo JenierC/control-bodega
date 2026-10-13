@@ -560,4 +560,59 @@ if st.session_state['rol'] == "ADMIN":
         activos_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'ACTIVO'])
         pendientes_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'INACTIVO'])
         
-        col1, col2, col
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Usuarios Registrados", total_users)
+        col2.metric("Usuarios Activos", activos_count)
+        col3.metric("Pendientes de Aprobar", pendientes_count)
+        
+        st.dataframe(df_todos_usuarios, use_container_width=True)
+        
+        st.write("**Editar datos o cambiar contraseña de un usuario:**")
+        user_sel_id = st.selectbox(
+            "Seleccione el Usuario:", 
+            df_todos_usuarios['id'].tolist(),
+            format_func=lambda x: f"ID {x} - {df_todos_usuarios[df_todos_usuarios['id'] == x]['nombre'].values[0]} (@{df_todos_usuarios[df_todos_usuarios['id'] == x]['username'].values[0]})"
+        )
+        
+        user_data = df_todos_usuarios[df_todos_usuarios['id'] == user_sel_id].iloc[0]
+        
+        with st.form("form_edit_user"):
+            e_nombre = st.text_input("Nombre Completo:", value=user_data['nombre'])
+            e_username = st.text_input("Nombre de Usuario (username):", value=user_data['username'])
+            e_rol = st.selectbox("Rol de Sistema:", ["BASICO", "ADMIN"], index=0 if user_data['rol'] == "BASICO" else 1)
+            e_pass = st.text_input("Nueva Contraseña (Dejar en blanco para mantener la actual):", type="password")
+            
+            if st.form_submit_button("💾 Guardar Cambios de Usuario", type="primary"):
+                cursor = conn.cursor()
+                if e_pass.strip():
+                    hash_nueva_pass = hashlib.sha256(e_pass.encode()).hexdigest()
+                    cursor.execute("""
+                        UPDATE funcionarios 
+                        SET nombre=?, username=?, rol=?, password=? 
+                        WHERE id=?
+                    """, (e_nombre, e_username, e_rol, hash_nueva_pass, user_sel_id))
+                else:
+                    cursor.execute("""
+                        UPDATE funcionarios 
+                        SET nombre=?, username=?, rol=? 
+                        WHERE id=?
+                    """, (e_nombre, e_username, e_rol, user_sel_id))
+                conn.commit()
+                sync_usuarios_excel()
+                st.success(f"¡Datos del usuario ID {user_sel_id} actualizados correctamente!")
+                st.rerun()
+        
+        conn.close()
+
+        st.markdown("---")
+        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos")
+        
+        num_actual = obtener_ultimo_consecutivo_db()
+        anio_actual = datetime.now().year
+        
+        st.info(f"El último pedimento registrado en el sistema fue el **#{num_actual:03d}-{anio_actual}**. El siguiente pedimento a generar será el **#{(num_actual + 1):03d}-{anio_actual}**.")
+        
+        nuevo_ultimo = st.number_input(
+            "Indique el ÚLTIMO número de pedimento generado (Ejemplo: ingrese 50 para que el siguiente pedimento sea el #051-2026):", 
+            min_value=0, 
+            max_value=999,
