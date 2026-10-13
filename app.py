@@ -16,7 +16,7 @@ from pdf_signature import exportar_excel_a_pdf, verificar_firma_digital_adobe
 from mailer import enviar_correo_con_pdf_adjunto, enviar_correo_pedimento_firmado
 
 EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
-MAX_INACTIVIDAD = 300  # 5 minutos de inactividad (300 segundos)
+MAX_INACTIVIDAD = 300  # 5 minutos de inactividad
 
 # ==========================================
 # VERIFICACIÓN AUTOMÁTICA DE BASE DE DATOS
@@ -84,25 +84,25 @@ if st.session_state['usuario_actual'] is None:
             st.query_params['t'] = str(int(now))
         else:
             logout_inactividad()
-            st.warning("⏱️ Su sesión ha expirado por inactividad (más de 5 minutos). Inicie sesión nuevamente.")
+            st.warning("⏱️ Su sesión ha expirado por inactividad. Inicie sesión de nuevo.")
     else:
         st.query_params.clear()
 else:
     # 2. Si ya hay sesión abierta, verificar inactividad
     if last_active is not None and (now - last_active) > MAX_INACTIVIDAD:
         logout_inactividad()
-        st.warning("⏱️ Su sesión se ha cerrado automáticamente por inactividad de más de 5 minutos.")
+        st.warning("⏱️ Su sesión se ha cerrado automáticamente por inactividad (5 minutos).")
         st.rerun()
     else:
         st.session_state['last_activity'] = now
         st.query_params['t'] = str(int(now))
 
-# Temporizador en el navegador (cliente) para cierre automático sin clics
+# Temporizador en el navegador para cierre automático
 def inyectar_temporizador_inactividad():
     js_codigo = """
     <script>
     (function() {
-        const LIMITE_MS = 300000; // 5 minutos
+        const LIMITE_MS = 300000;
         let ultimaActividad = Date.now();
         let reloj;
 
@@ -127,25 +127,18 @@ def inyectar_temporizador_inactividad():
 
         const eventos = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
         eventos.forEach(ev => {
-            try {
-                window.top.addEventListener(ev, registrarAccion, true);
-            } catch(e) {}
-            try {
-                window.addEventListener(ev, registrarAccion, true);
-            } catch(e) {}
+            try { window.top.addEventListener(ev, registrarAccion, true); } catch(e) {}
+            try { window.addEventListener(ev, registrarAccion, true); } catch(e) {}
         });
 
-        try {
-            window.top.addEventListener('focus', registrarAccion);
-        } catch(e) {}
-
+        try { window.top.addEventListener('focus', registrarAccion); } catch(e) {}
         registrarAccion();
     })();
     </script>
     """
     components.html(js_codigo, height=0, width=0)
 
-# Ocultar barra de desarrollador (Share, GitHub, Menú) a usuarios básicos
+# Ocultar barra superior a usuarios básicos
 if st.session_state['rol'] != "ADMIN":
     st.markdown("""
         <style>
@@ -172,7 +165,6 @@ def login(user, pwd):
             st.session_state['usuario_actual'] = result[1]
             st.session_state['rol'] = result[2]
             st.session_state['last_activity'] = time.time()
-            
             st.query_params['u'] = result[1]
             st.query_params['r'] = result[2]
             st.query_params['fid'] = str(result[0])
@@ -189,13 +181,11 @@ def sync_usuarios_excel():
     conn = sqlite3.connect("database.db")
     df_users = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username, rol, estado FROM funcionarios", conn)
     conn.close()
-    
     try:
         wb = openpyxl.load_workbook(EXCEL_MAESTRO)
         if 'USUARIOS' in wb.sheetnames:
             del wb['USUARIOS']
         ws = wb.create_sheet('USUARIOS')
-        
         for r in dataframe_to_rows(df_users, index=False, header=True):
             ws.append(r)
         wb.save(EXCEL_MAESTRO)
@@ -247,9 +237,6 @@ def limpiar_historial_y_archivos():
             except Exception:
                 pass
 
-# -------------------------------------------------------------------
-# PANTALLA DE LOGIN Y REGISTRO
-# -------------------------------------------------------------------
 if st.session_state['usuario_actual'] is None:
     tab_login, tab_registro = st.tabs(["🔑 Iniciar Sesión", "📝 Solicitar Acceso (Nuevo Usuario)"])
     
@@ -290,12 +277,8 @@ if st.session_state['usuario_actual'] is None:
                     st.error("Por favor complete todos los campos.")
     st.stop()
 
-# Inyectar el temporizador activo en el navegador una vez autenticado
 inyectar_temporizador_inactividad()
 
-# -------------------------------------------------------------------
-# NAVEGACIÓN Y BOTÓN DE CIERRE DE SESIÓN DESTACADO
-# -------------------------------------------------------------------
 st.sidebar.markdown("### 👤 Sesión Activa")
 st.sidebar.write(f"Usuario: **{st.session_state['usuario_actual']}**")
 st.sidebar.write(f"Rol: **{st.session_state['rol']}**")
@@ -312,9 +295,6 @@ else:
     tabs = st.tabs(["📝 1. Mis Pedimentos (Hasta 10 ítems)"])
     tab_pedimentos = tabs[0]
 
-# -------------------------------------------------------------------
-# TAB 1: FORMULARIO DE PEDIMENTOS (VISTO POR TODOS)
-# -------------------------------------------------------------------
 with tab_pedimentos:
     st.header("📦 Solicitud de Insumos")
     
@@ -415,15 +395,9 @@ with tab_pedimentos:
         else:
             st.info("No ha agregado artículos a la lista.")
 
-# -------------------------------------------------------------------
-# SECCIONES EXCLUSIVAS PARA ADMINISTRADORES (JENIER / GABRIELA)
-# -------------------------------------------------------------------
 if st.session_state['rol'] == "ADMIN":
-    
-    # TAB 2: FIRMA Y APROBACIÓN
     with tab_firma:
         st.header("✍️ Validación de Pedimentos Firmados en Adobe Acrobat")
-        
         st.subheader("1. Pedimentos Pendientes de Firma")
         st.write("Descargue el documento PDF que desea firmar en Adobe Acrobat:")
         
@@ -458,7 +432,6 @@ if st.session_state['rol'] == "ADMIN":
                 f.write(archivo_pdf_subido.getbuffer())
                 
             st.info("Verificando firma digital en el documento PDF...")
-            
             es_valido_firma, detalle_firma = verificar_firma_digital_adobe(ruta_guardado)
             
             if es_valido_firma:
@@ -494,7 +467,6 @@ if st.session_state['rol'] == "ADMIN":
             else:
                 st.error(f"❌ Error de Validación: {detalle_firma}")
 
-    # TAB 3: INFORMES
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico")
         conn = sqlite3.connect("database.db")
@@ -507,10 +479,8 @@ if st.session_state['rol'] == "ADMIN":
             WHERE s.estado = 'APROBADO_FIRMA_DIGITAL'
         """, conn)
         conn.close()
-        
         st.dataframe(df_entregas, use_container_width=True)
 
-    # TAB 4: APROBACIÓN DE USUARIOS
     with tab_usuarios:
         st.header("✅ Aprobación de Cuentas de Usuarios")
         st.write("Gestione las solicitudes de acceso al sistema.")
@@ -545,7 +515,6 @@ if st.session_state['rol'] == "ADMIN":
         if not df_inactivos.empty:
             conn.close()
 
-    # TAB 5: CONTROL MASTER, USUARIOS Y REINICIO
     with tab_master:
         st.header("⚙️ Control Master del Sistema")
         st.write("Herramientas exclusivas para el usuario Administrador Master.")
@@ -610,9 +579,33 @@ if st.session_state['rol'] == "ADMIN":
         num_actual = obtener_ultimo_consecutivo_db()
         anio_actual = datetime.now().year
         
-        st.info(f"El último pedimento registrado en el sistema fue el **#{num_actual:03d}-{anio_actual}**. El siguiente pedimento a generar será el **#{(num_actual + 1):03d}-{anio_actual}**.")
+        st.info(f"El último pedimento registrado fue el **#{num_actual:03d}-{anio_actual}**. El siguiente será el **#{(num_actual + 1):03d}-{anio_actual}**.")
         
-        nuevo_ultimo = st.number_input(
-            "Indique el ÚLTIMO número de pedimento generado (Ejemplo: ingrese 50 para que el siguiente pedimento sea el #051-2026):", 
-            min_value=0, 
-            max_value=999,
+        nuevo_ultimo = st.number_input("Indique el ÚLTIMO número generado:", min_value=0, max_value=999, value=num_actual, step=1)
+        
+        if st.button("💾 Guardar Consecutivo de Pedimentos", type="primary"):
+            fijar_ultimo_consecutivo_db(int(nuevo_ultimo))
+            siguiente = int(nuevo_ultimo) + 1
+            st.success(f"¡Consecutivo actualizado! El próximo pedimento será el **#{siguiente:03d}-{anio_actual}**.")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("3. Limpieza de Pedimentos y Archivos de Prueba")
+        st.write("Elimina la base de datos de solicitudes y **elimina todos los archivos PDF/Excel de la lista de firmas pendientes**.")
+        
+        if st.button("🗑️ Borrar Historial de Solicitudes y PDFs de Prueba"):
+            limpiar_historial_y_archivos()
+            st.success("¡Se ha limpiado el historial y se borraron todos los archivos PDF pendientes de firma!")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("4. Reinicio Completo del Sistema")
+        st.warning("⚠️ **Atención:** Esta opción recreará la base de datos completa a su estado inicial de fábrica.")
+        
+        confirmar_reset = st.checkbox("Confirmo que deseo reinstalar el sistema por completo")
+        if confirmar_reset:
+            if st.button("🔥 Reinstalar Base de Datos Completa", type="primary"):
+                instalar_sistema()
+                limpiar_historial_y_archivos()
+                st.success("¡El sistema ha sido reinstalado a su estado de fábrica!")
+                st.rerun()
