@@ -35,7 +35,7 @@ def verificar_base_datos():
 
 verificar_base_datos()
 
-# initial_sidebar_state="expanded" mantiene el menú lateral abierto al ingresar
+# Inicia con el menú lateral desplegado
 st.set_page_config(page_title="Bodega DINADECO", page_icon="📦", layout="wide", initial_sidebar_state="expanded")
 
 if 'usuario_actual' not in st.session_state:
@@ -140,41 +140,18 @@ def inyectar_temporizador_inactividad():
     components.html(js_codigo, height=0, width=0)
 
 # -------------------------------------------------------------------
-# OCULTAR BARRA DE DESARROLLADOR (SHARE, GITHUB, MENÚ) A USUARIOS BÁSICOS
-# MANTENIENDO VISIBLE Y OPERATIVA LA FLECHA (>>) PARA ABRIR Y CERRAR EL MENÚ
+# OCULTAR ÚNICAMENTE LA BARRA DERECHA (SHARE, GITHUB, MENÚ) A USUARIOS BÁSICOS
+# SIN TOCAR EL HEADER NI EL BOTÓN DE EXPANSIÓN LATERAL (>>)
 # -------------------------------------------------------------------
 if st.session_state['rol'] != "ADMIN":
     st.markdown("""
         <style>
-        /* Ocultar únicamente las herramientas de desarrollador a la derecha (Share, GitHub, menú) */
+        /* Oculta únicamente el grupo de botones de la esquina superior derecha */
         [data-testid="stToolbar"] {
             display: none !important;
-            visibility: hidden !important;
-        }
-        .stDeployButton {
-            display: none !important;
-            visibility: hidden !important;
-        }
-        #MainMenu {
-            display: none !important;
-            visibility: hidden !important;
         }
         footer {
             display: none !important;
-            visibility: hidden !important;
-        }
-        /* El encabezado y la flecha (>>) de navegación lateral SIEMPRE visibles y operativos */
-        header, [data-testid="stHeader"] {
-            display: flex !important;
-            visibility: visible !important;
-            background: transparent !important;
-        }
-        [data-testid="stSidebarCollapsedControl"],
-        [data-testid="collapsedControl"] {
-            display: flex !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-            z-index: 999999 !important;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -267,6 +244,9 @@ def limpiar_historial_y_archivos():
             except Exception:
                 pass
 
+# -------------------------------------------------------------------
+# PANTALLA DE LOGIN Y REGISTRO
+# -------------------------------------------------------------------
 if st.session_state['usuario_actual'] is None:
     tab_login, tab_registro = st.tabs(["🔑 Iniciar Sesión", "📝 Solicitar Acceso (Nuevo Usuario)"])
     
@@ -309,6 +289,9 @@ if st.session_state['usuario_actual'] is None:
 
 inyectar_temporizador_inactividad()
 
+# -------------------------------------------------------------------
+# NAVEGACIÓN Y BOTÓN DE CIERRE DE SESIÓN DESTACADO
+# -------------------------------------------------------------------
 st.sidebar.markdown("### 👤 Sesión Activa")
 st.sidebar.write(f"Usuario: **{st.session_state['usuario_actual']}**")
 st.sidebar.write(f"Rol: **{st.session_state['rol']}**")
@@ -325,6 +308,9 @@ else:
     tabs = st.tabs(["📝 1. Mis Pedimentos (Hasta 10 ítems)"])
     tab_pedimentos = tabs[0]
 
+# -------------------------------------------------------------------
+# TAB 1: FORMULARIO DE PEDIMENTOS (VISTO POR TODOS)
+# -------------------------------------------------------------------
 with tab_pedimentos:
     st.header("📦 Solicitud de Insumos")
     
@@ -425,7 +411,12 @@ with tab_pedimentos:
         else:
             st.info("No ha agregado artículos a la lista.")
 
+# -------------------------------------------------------------------
+# SECCIONES EXCLUSIVAS PARA ADMINISTRADORES (JENIER / GABRIELA)
+# -------------------------------------------------------------------
 if st.session_state['rol'] == "ADMIN":
+    
+    # TAB 2: FIRMA Y APROBACIÓN
     with tab_firma:
         st.header("✍️ Validación de Pedimentos Firmados en Adobe Acrobat")
         st.subheader("1. Pedimentos Pendientes de Firma")
@@ -497,6 +488,7 @@ if st.session_state['rol'] == "ADMIN":
             else:
                 st.error(f"❌ Error de Validación: {detalle_firma}")
 
+    # TAB 3: INFORMES
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico")
         conn = sqlite3.connect("database.db")
@@ -511,6 +503,7 @@ if st.session_state['rol'] == "ADMIN":
         conn.close()
         st.dataframe(df_entregas, use_container_width=True)
 
+    # TAB 4: APROBACIÓN DE USUARIOS
     with tab_usuarios:
         st.header("✅ Aprobación de Cuentas de Usuarios")
         st.write("Gestione las solicitudes de acceso al sistema.")
@@ -545,6 +538,7 @@ if st.session_state['rol'] == "ADMIN":
         if not df_inactivos.empty:
             conn.close()
 
+    # TAB 5: CONTROL MASTER, USUARIOS Y REINICIO
     with tab_master:
         st.header("⚙️ Control Master del Sistema")
         st.write("Herramientas exclusivas para el usuario Administrador Master.")
