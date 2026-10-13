@@ -35,7 +35,8 @@ def verificar_base_datos():
 
 verificar_base_datos()
 
-st.set_page_config(page_title="Bodega DINADECO", page_icon="📦", layout="wide")
+# initial_sidebar_state="expanded" mantiene el menú lateral abierto al ingresar
+st.set_page_config(page_title="Bodega DINADECO", page_icon="📦", layout="wide", initial_sidebar_state="expanded")
 
 if 'usuario_actual' not in st.session_state:
     st.session_state['usuario_actual'] = None
@@ -140,28 +141,40 @@ def inyectar_temporizador_inactividad():
 
 # -------------------------------------------------------------------
 # OCULTAR BARRA DE DESARROLLADOR (SHARE, GITHUB, MENÚ) A USUARIOS BÁSICOS
-# MANTENIENDO VISIBLE LA FLECHA (>>) PARA ABRIR Y CERRAR EL MENÚ
+# MANTENIENDO VISIBLE Y OPERATIVA LA FLECHA (>>) PARA ABRIR Y CERRAR EL MENÚ
 # -------------------------------------------------------------------
 if st.session_state['rol'] != "ADMIN":
     st.markdown("""
         <style>
-        /* Ocultar botones de Share, GitHub, lápiz y menú derecho */
+        /* Ocultar únicamente las herramientas de desarrollador a la derecha (Share, GitHub, menú) */
         [data-testid="stToolbar"] {
             display: none !important;
             visibility: hidden !important;
         }
-        #MainMenu {
-            visibility: hidden !important;
+        .stDeployButton {
             display: none !important;
+            visibility: hidden !important;
+        }
+        #MainMenu {
+            display: none !important;
+            visibility: hidden !important;
         }
         footer {
-            visibility: hidden !important;
             display: none !important;
+            visibility: hidden !important;
         }
-        /* Mantener visible y operativa la flecha (>>) para el menú lateral */
+        /* El encabezado y la flecha (>>) de navegación lateral SIEMPRE visibles y operativos */
+        header, [data-testid="stHeader"] {
+            display: flex !important;
+            visibility: visible !important;
+            background: transparent !important;
+        }
+        [data-testid="stSidebarCollapsedControl"],
         [data-testid="collapsedControl"] {
             display: flex !important;
             visibility: visible !important;
+            opacity: 1 !important;
+            z-index: 999999 !important;
         }
         </style>
     """, unsafe_allow_html=True)
