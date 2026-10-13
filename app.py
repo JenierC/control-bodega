@@ -140,63 +140,33 @@ def inyectar_temporizador_inactividad():
     components.html(js_codigo, height=0, width=0)
 
 # -------------------------------------------------------------------
-# OCULTAR BARRA DE DESARROLLADOR A USUARIOS BÁSICOS
-# GARANTIZANDO QUE LA FLECHA (>>) SIEMPRE ESTÉ 100% VISIBLE Y FUNCIONAL
+# OCULTAR ÚNICAMENTE LAS HERRAMIENTAS DE DESARROLLO (SHARE, GITHUB, MENÚ)
+# SIN OCULTAR EL CONTENEDOR TOOLBAR PARA PRESERVAR EL BOTÓN (>>)
 # -------------------------------------------------------------------
 if st.session_state['rol'] != "ADMIN":
     st.markdown("""
         <style>
-        /* 1. ASEGURAR QUE EL ENCABEZADO EXISTA Y NO ESTÉ COLAPSADO */
-        header, [data-testid="stHeader"], .stAppHeader {
-            display: block !important;
-            visibility: visible !important;
-            height: 3.5rem !important;
-            background: transparent !important;
-        }
-
-        /* 2. OCULTAR EXCLUSIVAMENTE LA BARRA DE HERRAMIENTAS DERECHA (Share, GitHub, Editar, Estrella, Menú) */
-        [data-testid="stToolbar"] {
+        /* 1. Ocultar únicamente las acciones de la derecha (Share, Star, Edit, GitHub y el Menú de 3 puntos) */
+        [data-testid="stToolbarActions"],
+        .stToolbarActionButton,
+        [data-testid="stToolbar"] a,
+        [data-testid="stToolbar"] button:not([kind="headerNoPadding"]),
+        .stAppDeployButton,
+        div[class*="viewerBadge"],
+        #MainMenu,
+        footer {
             display: none !important;
             visibility: hidden !important;
         }
-        .stDeployButton {
-            display: none !important;
-        }
-        #MainMenu {
-            display: none !important;
-        }
-        footer {
-            display: none !important;
-        }
 
-        /* 3. FORZAR LA VISIBILIDAD DE LA FLECHA (>>) EN LA ESQUINA SUPERIOR IZQUIERDA */
-        [data-testid="stSidebarCollapsedControl"],
-        [data-testid="collapsedControl"],
-        button[aria-label="Expand sidebar"],
-        button[data-testid="stSidebarCollapseButton"] {
-            display: flex !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-            position: fixed !important;
-            top: 0.6rem !important;
-            left: 0.8rem !important;
-            z-index: 9999999 !important;
-        }
-
-        [data-testid="stSidebarCollapsedControl"] button,
-        [data-testid="collapsedControl"] button {
-            display: flex !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        }
-
-        [data-testid="stSidebarCollapsedControl"] svg,
-        [data-testid="collapsedControl"] svg,
-        button[aria-label="Expand sidebar"] svg {
+        /* 2. Asegurar que el control de la barra lateral (>>) esté 100% visible */
+        [data-testid="stSidebarCollapsedControl"] {
             display: block !important;
             visibility: visible !important;
-            fill: #00bcd4 !important;
-            stroke: #00bcd4 !important;
+        }
+        [data-testid="stSidebarCollapsedControl"] button {
+            display: inline-flex !important;
+            visibility: visible !important;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -332,13 +302,13 @@ if st.session_state['usuario_actual'] is None:
 inyectar_temporizador_inactividad()
 
 # -------------------------------------------------------------------
-# NAVEGACIÓN Y BOTÓN DE CIERRE DE SESIÓN DESTACADO
+# NAVEGACIÓN Y BOTÓN DE CIERRE DE SESIÓN DESTACADO EN SIDEBAR
 # -------------------------------------------------------------------
 st.sidebar.markdown("### 👤 Sesión Activa")
 st.sidebar.write(f"Usuario: **{st.session_state['usuario_actual']}**")
 st.sidebar.write(f"Rol: **{st.session_state['rol']}**")
 
-if st.sidebar.button("🔴 Cerrar Sesión", type="primary", use_container_width=True):
+if st.sidebar.button("🔴 Cerrar Sesión", type="primary", use_container_width=True, key="btn_logout_sidebar"):
     logout()
 
 st.sidebar.markdown("---")
@@ -354,6 +324,14 @@ else:
 # TAB 1: FORMULARIO DE PEDIMENTOS (VISTO POR TODOS)
 # -------------------------------------------------------------------
 with tab_pedimentos:
+    # Barra de información superior accesible incluso con el menú lateral cerrado
+    col_u1, col_u2 = st.columns([4, 1])
+    with col_u1:
+        st.caption(f"👤 Conectado: **{st.session_state['usuario_actual']}** ({st.session_state['rol']})")
+    with col_u2:
+        if st.button("🔴 Salir", key="btn_logout_top", use_container_width=True):
+            logout()
+
     st.header("📦 Solicitud de Insumos")
     
     if st.session_state['ultimo_pedimento']:
