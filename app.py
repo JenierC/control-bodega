@@ -7,6 +7,7 @@ import hashlib
 import openpyxl
 from openpyxl.utils.dataframe import dataframe_to_rows
 import os
+import glob
 
 from setup_inicial import instalar_sistema
 from exporter_bys import generar_formulario_oficial_bys
@@ -81,6 +82,19 @@ else:
         except Exception:
             pass
 
+# -------------------------------------------------------------------
+# OCULTAR BARRA SUPERIOR E ÍCONOS DE GITHUB A USUARIOS BÁSICOS
+# -------------------------------------------------------------------
+if st.session_state['rol'] != "ADMIN":
+    st.markdown("""
+        <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .stAppHeader {display: none;}
+        </style>
+    """, unsafe_allow_html=True)
+
 def login(user, pwd):
     hash_pwd = hashlib.sha256(pwd.encode()).hexdigest()
     conn = sqlite3.connect("database.db")
@@ -154,6 +168,24 @@ def fijar_ultimo_consecutivo_db(nuevo_num):
     cursor.execute("INSERT OR REPLACE INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, nuevo_num))
     conn.commit()
     conn.close()
+
+def limpiar_historial_y_archivos():
+    # 1. Borrar base de datos de solicitudes
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM solicitudes")
+    conn.commit()
+    conn.close()
+
+    # 2. Borrar archivos físicos PDF y Excel generados en el servidor
+    folder = "pedimentos_generados"
+    if os.path.exists(folder):
+        archivos = glob.glob(os.path.join(folder, "*"))
+        for f in archivos:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
 # -------------------------------------------------------------------
 # PANTALLA DE LOGIN Y REGISTRO
@@ -450,13 +482,67 @@ if st.session_state['rol'] == "ADMIN":
         if not df_inactivos.empty:
             conn.close()
 
-    # TAB 5: CONTROL MASTER Y REINICIO DE SISTEMA
+    # TAB 5: CONTROL MASTER, USUARIOS Y REINICIO
     with tab_master:
         st.header("⚙️ Control Master del Sistema")
         st.write("Herramientas exclusivas para el usuario Administrador Master.")
         
         st.markdown("---")
-        st.subheader("1. Ajuste Manual de Consecutivo de Pedimentos")
+        st.subheader("1. Gestión de Usuarios y Contraseñas")
+        
+        conn = sqlite3.connect("database.db")
+        df_todos_usuarios = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username, rol, estado FROM funcionarios", conn)
+        
+        total_users = len(df_todos_usuarios)
+        activos_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'ACTIVO'])
+        pendientes_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'INACTIVO'])
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Usuarios Registrados", total_users)
+        col2.metric("Usuarios Activos", activos_count)
+        col3.metric("Pendientes de Aprobar", pendientes_count)
+        
+        st.dataframe(df_todos_usuarios, use_container_width=True)
+        
+        st.write("**Editar datos o cambiar contraseña de un usuario:**")
+        user_sel_id = st.selectbox(
+            "Seleccione el Usuario:", 
+            df_todos_usuarios['id'].tolist(),
+            format_func=lambda x: f"ID {x} - {df_todos_usuarios[df_todos_usuarios['id'] == x]['nombre'].values[0]} (@{df_todos_usuarios[df_todos_usuarios['id'] == x]['username'].values[0]})"
+        )
+        
+        user_data = df_todos_usuarios[df_todos_usuarios['id'] == user_sel_id].iloc[0]
+        
+        with st.form("form_edit_user"):
+            e_nombre = st.text_input("Nombre Completo:", value=user_data['nombre'])
+            e_username = st.text_input("Nombre de Usuario (username):", value=user_data['username'])
+            e_rol = st.selectbox("Rol de Sistema:", ["BASICO", "ADMIN"], index=0 if user_data['rol'] == "BASICO" else 1)
+            e_pass = st.text_input("Nueva Contraseña (Dejar en blanco para mantener la actual):", type="password")
+            
+            if st.form_submit_button("💾 Guardar Cambios de Usuario", type="primary"):
+                cursor = conn.cursor()
+                if e_pass.strip():
+                    hash_nueva_pass = hashlib.sha256(e_pass.encode()).hexdigest()
+                    cursor.execute("""
+                        UPDATE funcionarios 
+                        SET nombre=?, username=?, rol=?, password=? 
+                        WHERE id=?
+                    """, (e_nombre, e_username, e_rol, hash_nueva_pass, user_sel_id))
+                else:
+                    cursor.execute("""
+                        UPDATE funcionarios 
+                        SET nombre=?, username=?, rol=? 
+                        WHERE id=?
+                    """, (e_nombre, e_username, e_rol, user_sel_id))
+                conn.commit()
+                sync_usuarios_excel()
+                st.success(f"¡Datos del usuario ID {user_sel_id} actualizados correctamente!")
+                st.rerun()
+        
+        conn.close()
+
+        st.markdown("---")
+        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos")
         
         num_actual = obtener_ultimo_consecutivo_db()
         anio_actual = datetime.now().year
@@ -478,25 +564,22 @@ if st.session_state['rol'] == "ADMIN":
             st.rerun()
 
         st.markdown("---")
-        st.subheader("2. Limpieza de Pedimentos de Prueba")
-        st.write("Elimina las solicitudes de prueba generadas hasta el momento, manteniendo los usuarios y el catálogo intactos.")
+        st.subheader("3. Limpieza de Pedimentos y Archivos de Prueba")
+        st.write("Elimina la base de datos de solicitudes y **elimina todos los archivos PDF/Excel de la lista de firmas pendientes**.")
         
-        if st.button("🗑️ Borrar Historial de Solicitudes y Pedimentos de Prueba"):
-            conn = sqlite3.connect("database.db")
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM solicitudes")
-            conn.commit()
-            conn.close()
-            st.success("¡Se ha limpiado el historial de pedimentos de prueba exitosamente!")
+        if st.button("🗑️ Borrar Historial de Solicitudes y PDFs de Prueba"):
+            limpiar_historial_y_archivos()
+            st.success("¡Se ha limpiado el historial y se borraron todos los archivos PDF pendientes de firma!")
             st.rerun()
 
         st.markdown("---")
-        st.subheader("3. Reinicio Completo del Sistema")
+        st.subheader("4. Reinicio Completo del Sistema")
         st.warning("⚠️ **Atención:** Esta opción recreará la base de datos completa a su estado inicial de fábrica.")
         
         confirmar_reset = st.checkbox("Confirmo que deseo reinstalar el sistema por completo")
         if confirmar_reset:
             if st.button("🔥 Reinstalar Base de Datos Completa", type="primary"):
                 instalar_sistema()
+                limpiar_historial_y_archivos()
                 st.success("¡El sistema ha sido reinstalado a su estado de fábrica!")
                 st.rerun()
