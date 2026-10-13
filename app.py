@@ -234,4 +234,395 @@ def fijar_ultimo_consecutivo_db(nuevo_num):
             ultimo_numero INTEGER NOT NULL
         )
     """)
-    cursor.execute("INSERT OR REPLACE INTO control_consecutivos (anio, ultimo_numero
+    cursor.execute("INSERT OR REPLACE INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, nuevo_num))
+    conn.commit()
+    conn.close()
+
+def limpiar_historial_y_archivos():
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM solicitudes")
+    conn.commit()
+    conn.close()
+
+    folder = "pedimentos_generados"
+    if os.path.exists(folder):
+        archivos = glob.glob(os.path.join(folder, "*"))
+        for f in archivos:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
+if st.session_state['usuario_actual'] is None:
+    tab_login, tab_registro = st.tabs(["🔑 Iniciar Sesión", "📝 Solicitar Acceso (Nuevo Usuario)"])
+    
+    with tab_login:
+        st.subheader("Acceso al Sistema de Bodega")
+        with st.form("form_login"):
+            usuario = st.text_input("Usuario")
+            clave = st.text_input("Contraseña", type="password")
+            if st.form_submit_button("Ingresar"):
+                login(usuario, clave)
+                
+    with tab_registro:
+        st.subheader("Crear Nueva Cuenta")
+        st.info("Su cuenta debe ser aprobada por jefatura (Jenier/Gabriela) antes de poder ingresar.")
+        with st.form("form_registro"):
+            n_nombre = st.text_input("Nombre Completo:")
+            n_puesto = st.selectbox("Puesto / Rol:", ["Misceláneo/a", "Chofer", "Oficial de Seguridad", "Recepcionista", "Administrativo General"])
+            n_espacio = st.selectbox("Espacio / Piso Asignado:", ["Piso 1 (30%)", "Piso 2 (40%)", "Piso 3 (30%)", "Oficina General", "Exteriores", "Flota Vehicular"])
+            n_user = st.text_input("Nombre de Usuario (ej. cruiz):")
+            n_pass = st.text_input("Contraseña:", type="password")
+            
+            if st.form_submit_button("Solicitar Acceso"):
+                if n_nombre and n_user and n_pass:
+                    conn = sqlite3.connect("database.db")
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id FROM funcionarios WHERE username=?", (n_user,))
+                    if cursor.fetchone():
+                        st.error("Ese nombre de usuario ya existe.")
+                    else:
+                        hash_p = hashlib.sha256(n_pass.encode()).hexdigest()
+                        cursor.execute("INSERT INTO funcionarios (nombre, puesto, espacio_asignado, username, password, rol, estado) VALUES (?, ?, ?, ?, ?, 'BASICO', 'INACTIVO')", 
+                                       (n_nombre, n_puesto, n_espacio, n_user, hash_p))
+                        conn.commit()
+                        conn.close()
+                        sync_usuarios_excel()
+                        st.success("Cuenta registrada. Jenier o Gabriela deben aprobar el ingreso.")
+                else:
+                    st.error("Por favor complete todos los campos.")
+    st.stop()
+
+inyectar_temporizador_inactividad()
+
+st.sidebar.markdown("### 👤 Sesión Activa")
+st.sidebar.write(f"Usuario: **{st.session_state['usuario_actual']}**")
+st.sidebar.write(f"Rol: **{st.session_state['rol']}**")
+
+if st.sidebar.button("🔴 Cerrar Sesión", type="primary", use_container_width=True):
+    logout()
+
+st.sidebar.markdown("---")
+
+if st.session_state['rol'] == "ADMIN":
+    tabs = st.tabs(["📝 1. Pedimentos", "✍️ 2. Firma/Aprobación PDF", "📊 3. Informes", "✅ 4. Aprobar Usuarios", "⚙️ 5. Control Master"])
+    tab_pedimentos, tab_firma, tab_informes, tab_usuarios, tab_master = tabs
+else:
+    tabs = st.tabs(["📝 1. Mis Pedimentos (Hasta 10 ítems)"])
+    tab_pedimentos = tabs[0]
+
+with tab_pedimentos:
+    st.header("📦 Solicitud de Insumos")
+    
+    if st.session_state['ultimo_pedimento']:
+        ped = st.session_state['ultimo_pedimento']
+        st.success(f"🎉 ¡Pedimento procesado con éxito! Consecutivo asignado: **#{ped['consecutivo']}**")
+        
+        if ped.get("exito_mail"):
+            st.info("📩 El documento ha sido enviado por correo para la respectiva Firma Digital.")
+        else:
+            st.error(f"⚠️ **Atención:** Ocurrió un inconveniente al enviar el correo automático: **{ped.get('msg_mail')}**")
+        st.markdown("---")
+
+    conn = sqlite3.connect("database.db")
+    df_articulos = pd.read_sql_query("SELECT codigo_grupal, descripcion, categoria, frecuencia_entrega, dias_vida_util FROM articulos", conn)
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT espacio_asignado FROM funcionarios WHERE id=?", (st.session_state['func_id'],))
+    res_piso = cursor.fetchone()
+    piso_asignado = res_piso[0] if res_piso else "Oficina General"
+    conn.close()
+
+    colA, colB = st.columns([1, 2])
+    
+    with colA:
+        st.subheader("Añadir Insumos")
+        categorias = ["Todas"] + list(df_articulos["categoria"].dropna().unique())
+        cat_sel = st.selectbox("Categoría:", categorias)
+        
+        df_filtro = df_articulos if cat_sel == "Todas" else df_articulos[df_articulos["categoria"] == cat_sel]
+        articulo_sel = st.selectbox("Artículo:", df_filtro["descripcion"].tolist())
+        item_info = df_articulos[df_articulos["descripcion"] == articulo_sel].iloc[0]
+        
+        cantidad = st.number_input("Cantidad:", min_value=1, value=1, step=1)
+        
+        if st.button("➕ Agregar al Pedimento"):
+            if len(st.session_state['carrito']) >= 10:
+                st.error("Límite máximo de 10 ítems por pedimento alcanzado.")
+            elif any(item['codigo'] == item_info['codigo_grupal'] for item in st.session_state['carrito']):
+                st.warning("Este artículo ya está en su lista actual.")
+            else:
+                st.session_state['carrito'].append({
+                    "codigo": item_info['codigo_grupal'],
+                    "descripcion": articulo_sel,
+                    "cantidad": cantidad,
+                    "frecuencia": item_info['frecuencia_entrega'],
+                    "dias_vida": item_info['dias_vida_util']
+                })
+                st.success("Artículo agregado al pedimento.")
+
+    with colB:
+        st.subheader(f"🛒 Mi Pedimento Actual ({len(st.session_state['carrito'])}/10)")
+        if len(st.session_state['carrito']) > 0:
+            df_carrito = pd.DataFrame(st.session_state['carrito'])
+            st.dataframe(df_carrito[['descripcion', 'cantidad', 'frecuencia']], use_container_width=True)
+            
+            if st.button("🗑️ Vaciar Lista"):
+                st.session_state['carrito'] = []
+                st.rerun()
+            
+            justificacion_global = st.text_area("Justificación del pedido:")
+            if st.button("🚀 Enviar Pedimento Completo a Jefatura", type="primary"):
+                conn = sqlite3.connect("database.db")
+                cursor = conn.cursor()
+                
+                ids_guardados = []
+                for item in st.session_state['carrito']:
+                    cursor.execute("""
+                        INSERT INTO solicitudes (funcionario_id, articulo_id, cantidad, es_valido, justificacion, estado)
+                        VALUES (?, ?, ?, ?, ?, 'PENDIENTE')
+                    """, (st.session_state['func_id'], item['codigo'], item['cantidad'], 1, justificacion_global))
+                    ids_guardados.append(cursor.lastrowid)
+                conn.commit()
+                
+                hash_temp = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
+                consecutivo, ruta_excel = generar_formulario_oficial_bys(ids_guardados, "Departamento de Servicios Generales", "Pendiente de Firma", hash_temp)
+                ruta_pdf = ruta_excel.replace(".xlsx", ".pdf")
+                exportar_excel_a_pdf(ruta_excel, ruta_pdf)
+                conn.close()
+
+                exito_mail, msg_mail = enviar_correo_con_pdf_adjunto(
+                    consecutivo=consecutivo, 
+                    lista_items=st.session_state['carrito'], 
+                    solicitante=st.session_state['usuario_actual'], 
+                    es_valido=True, 
+                    motivo="Pedido reglamentario", 
+                    ruta_pdf=ruta_pdf, 
+                    justificacion=justificacion_global
+                )
+
+                st.session_state['ultimo_pedimento'] = {
+                    "consecutivo": consecutivo,
+                    "exito_mail": exito_mail,
+                    "msg_mail": msg_mail
+                }
+                st.session_state['carrito'] = []
+                st.rerun()
+        else:
+            st.info("No ha agregado artículos a la lista.")
+
+if st.session_state['rol'] == "ADMIN":
+    with tab_firma:
+        st.header("✍️ Validación de Pedimentos Firmados en Adobe Acrobat")
+        st.subheader("1. Pedimentos Pendientes de Firma")
+        st.write("Descargue el documento PDF que desea firmar en Adobe Acrobat:")
+        
+        if os.path.exists("pedimentos_generados"):
+            archivos_pdf = [f for f in os.listdir("pedimentos_generados") if f.endswith(".pdf")]
+            if archivos_pdf:
+                for arch in archivos_pdf:
+                    ruta_c = os.path.join("pedimentos_generados", arch)
+                    with open(ruta_c, "rb") as f_arch:
+                        st.download_button(
+                            label=f"📥 Descargar {arch} para firmar en Adobe",
+                            data=f_arch.read(),
+                            file_name=arch,
+                            mime="application/pdf",
+                            key=f"dl_{arch}"
+                        )
+            else:
+                st.info("No hay archivos PDF pendientes en el servidor.")
+        else:
+            st.info("No se han generado pedimentos aún.")
+
+        st.markdown("---")
+        st.subheader("2. Cargar Pedimento PDF Ya Firmado")
+        st.write("Una vez firmado en Adobe Acrobat con su tarjeta BCCR, cárguelo aquí para registrar la salida de bodega:")
+        
+        archivo_pdf_subido = st.file_uploader("Cargar Pedimento PDF Firmado:", type=["pdf"])
+        
+        if archivo_pdf_subido is not None:
+            os.makedirs("pedimentos_generados", exist_ok=True)
+            ruta_guardado = os.path.join("pedimentos_generados", archivo_pdf_subido.name)
+            with open(ruta_guardado, "wb") as f:
+                f.write(archivo_pdf_subido.getbuffer())
+                
+            st.info("Verificando firma digital en el documento PDF...")
+            es_valido_firma, detalle_firma = verificar_firma_digital_adobe(ruta_guardado)
+            
+            if es_valido_firma:
+                st.success(f"✅ **Firma Digital Verificada**: {detalle_firma}")
+                consecutivo_ext = archivo_pdf_subido.name.replace("Pedimento_", "").replace(".pdf", "")
+                
+                if st.button(f"🔒 Confirmar y Autorizar Salida de Bodega (#{consecutivo_ext})", type="primary"):
+                    conn = sqlite3.connect("database.db")
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE solicitudes 
+                        SET estado = 'APROBADO_FIRMA_DIGITAL', 
+                            firmado_por = 'Firma Digital BCCR (Adobe Acrobat)', 
+                            fecha_aprobacion = CURRENT_TIMESTAMP 
+                        WHERE estado = 'PENDIENTE'
+                    """)
+                    conn.commit()
+                    conn.close()
+
+                    exito_envio, msg_envio = enviar_correo_pedimento_firmado(
+                        consecutivo=consecutivo_ext,
+                        ruta_pdf_firmado=ruta_guardado,
+                        detalle_firma=detalle_firma
+                    )
+
+                    st.balloons()
+                    st.success(f"¡Pedimento #{consecutivo_ext} procesado y autorizado exitosamente en bodega!")
+                    
+                    if exito_envio:
+                        st.info("📩 El pedimento firmado ha sido enviado por correo a **agomez@dinadeco.go.cr** (Encargado de Bodega) con copia a **jcamacho@dinadeco.go.cr** y **agonzalez@dinadeco.go.cr**.")
+                    else:
+                        st.warning(f"⚠️ El pedimento fue autorizado en el sistema, pero ocurrió un aviso con el correo: {msg_envio}")
+            else:
+                st.error(f"❌ Error de Validación: {detalle_firma}")
+
+    with tab_informes:
+        st.header("📊 Informes Generales y Diagnóstico")
+        conn = sqlite3.connect("database.db")
+        df_entregas = pd.read_sql_query("""
+            SELECT f.nombre AS Funcionario, f.puesto AS Puesto, f.espacio_asignado AS Ubicacion, a.descripcion AS Articulo, 
+                   s.cantidad AS Cantidad, s.fecha_aprobacion AS Fecha_Entrega, s.firmado_por AS Aprobador
+            FROM solicitudes s 
+            JOIN funcionarios f ON s.funcionario_id = f.id 
+            JOIN articulos a ON s.articulo_id = a.codigo_grupal
+            WHERE s.estado = 'APROBADO_FIRMA_DIGITAL'
+        """, conn)
+        conn.close()
+        st.dataframe(df_entregas, use_container_width=True)
+
+    with tab_usuarios:
+        st.header("✅ Aprobación de Cuentas de Usuarios")
+        st.write("Gestione las solicitudes de acceso al sistema.")
+        
+        conn = sqlite3.connect("database.db")
+        df_inactivos = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username FROM funcionarios WHERE estado='INACTIVO'", conn)
+        
+        if df_inactivos.empty:
+            st.info("No hay usuarios pendientes de aprobación.")
+        else:
+            st.dataframe(df_inactivos, use_container_width=True)
+            user_id = st.number_input("ID del usuario a gestionar:", min_value=1, step=1)
+            
+            col1, col2 = st.columns(2)
+            if col1.button("✅ Aprobar Acceso", type="primary"):
+                cursor = conn.cursor()
+                cursor.execute("UPDATE funcionarios SET estado='ACTIVO' WHERE id=?", (user_id,))
+                conn.commit()
+                conn.close()
+                sync_usuarios_excel()
+                st.success(f"Usuario ID {user_id} aprobado e incorporado al Excel Maestro.")
+                st.rerun()
+            
+            if col2.button("❌ Rechazar / Eliminar"):
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM funcionarios WHERE id=?", (user_id,))
+                conn.commit()
+                conn.close()
+                sync_usuarios_excel()
+                st.error(f"Solicitud ID {user_id} eliminada.")
+                st.rerun()
+        if not df_inactivos.empty:
+            conn.close()
+
+    with tab_master:
+        st.header("⚙️ Control Master del Sistema")
+        st.write("Herramientas exclusivas para el usuario Administrador Master.")
+        
+        st.markdown("---")
+        st.subheader("1. Gestión de Usuarios y Contraseñas")
+        
+        conn = sqlite3.connect("database.db")
+        df_todos_usuarios = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username, rol, estado FROM funcionarios", conn)
+        
+        total_users = len(df_todos_usuarios)
+        activos_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'ACTIVO'])
+        pendientes_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'INACTIVO'])
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Usuarios Registrados", total_users)
+        col2.metric("Usuarios Activos", activos_count)
+        col3.metric("Pendientes de Aprobar", pendientes_count)
+        
+        st.dataframe(df_todos_usuarios, use_container_width=True)
+        
+        st.write("**Editar datos o cambiar contraseña de un usuario:**")
+        user_sel_id = st.selectbox(
+            "Seleccione el Usuario:", 
+            df_todos_usuarios['id'].tolist(),
+            format_func=lambda x: f"ID {x} - {df_todos_usuarios[df_todos_usuarios['id'] == x]['nombre'].values[0]} (@{df_todos_usuarios[df_todos_usuarios['id'] == x]['username'].values[0]})"
+        )
+        
+        user_data = df_todos_usuarios[df_todos_usuarios['id'] == user_sel_id].iloc[0]
+        
+        with st.form("form_edit_user"):
+            e_nombre = st.text_input("Nombre Completo:", value=user_data['nombre'])
+            e_username = st.text_input("Nombre de Usuario (username):", value=user_data['username'])
+            e_rol = st.selectbox("Rol de Sistema:", ["BASICO", "ADMIN"], index=0 if user_data['rol'] == "BASICO" else 1)
+            e_pass = st.text_input("Nueva Contraseña (Dejar en blanco para mantener la actual):", type="password")
+            
+            if st.form_submit_button("💾 Guardar Cambios de Usuario", type="primary"):
+                cursor = conn.cursor()
+                if e_pass.strip():
+                    hash_nueva_pass = hashlib.sha256(e_pass.encode()).hexdigest()
+                    cursor.execute("""
+                        UPDATE funcionarios 
+                        SET nombre=?, username=?, rol=?, password=? 
+                        WHERE id=?
+                    """, (e_nombre, e_username, e_rol, hash_nueva_pass, user_sel_id))
+                else:
+                    cursor.execute("""
+                        UPDATE funcionarios 
+                        SET nombre=?, username=?, rol=? 
+                        WHERE id=?
+                    """, (e_nombre, e_username, e_rol, user_sel_id))
+                conn.commit()
+                sync_usuarios_excel()
+                st.success(f"¡Datos del usuario ID {user_sel_id} actualizados correctamente!")
+                st.rerun()
+        
+        conn.close()
+
+        st.markdown("---")
+        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos")
+        
+        num_actual = obtener_ultimo_consecutivo_db()
+        anio_actual = datetime.now().year
+        
+        st.info(f"El último pedimento registrado fue el **#{num_actual:03d}-{anio_actual}**. El siguiente será el **#{(num_actual + 1):03d}-{anio_actual}**.")
+        
+        nuevo_ultimo = st.number_input("Indique el ÚLTIMO número generado:", min_value=0, max_value=999, value=num_actual, step=1)
+        
+        if st.button("💾 Guardar Consecutivo de Pedimentos", type="primary"):
+            fijar_ultimo_consecutivo_db(int(nuevo_ultimo))
+            siguiente = int(nuevo_ultimo) + 1
+            st.success(f"¡Consecutivo actualizado! El próximo pedimento será el **#{siguiente:03d}-{anio_actual}**.")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("3. Limpieza de Pedimentos y Archivos de Prueba")
+        st.write("Elimina la base de datos de solicitudes y **elimina todos los archivos PDF/Excel de la lista de firmas pendientes**.")
+        
+        if st.button("🗑️ Borrar Historial de Solicitudes y PDFs de Prueba"):
+            limpiar_historial_y_archivos()
+            st.success("¡Se ha limpiado el historial y se borraron todos los archivos PDF pendientes de firma!")
+            st.rerun()
+
+        st.markdown("---")
+        st.subheader("4. Reinicio Completo del Sistema")
+        st.warning("⚠️ **Atención:** Esta opción recreará la base de datos completa a su estado inicial de fábrica.")
+        
+        confirmar_reset = st.checkbox("Confirmo que deseo reinstalar el sistema por completo")
+        if confirmar_reset:
+            if st.button("🔥 Reinstalar Base de Datos Completa", type="primary"):
+                instalar_sistema()
+                limpiar_historial_y_archivos()
+                st.success("¡El sistema ha sido reinstalado a su estado de fábrica!")
+                st.rerun()
