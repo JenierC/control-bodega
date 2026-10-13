@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import sqlite3
 import pandas as pd
 from datetime import datetime
@@ -15,7 +16,7 @@ from pdf_signature import exportar_excel_a_pdf, verificar_firma_digital_adobe
 from mailer import enviar_correo_con_pdf_adjunto, enviar_correo_pedimento_firmado
 
 EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
-MAX_INACTIVIDAD = 300  # 5 minutos de inactividad
+MAX_INACTIVIDAD = 300  # 5 minutos de inactividad (300 segundos)
 
 # ==========================================
 # VERIFICACIÓN AUTOMÁTICA DE BASE DE DATOS
@@ -44,6 +45,8 @@ if 'carrito' not in st.session_state:
     st.session_state['carrito'] = []
 if 'ultimo_pedimento' not in st.session_state:
     st.session_state['ultimo_pedimento'] = None
+if 'last_activity' not in st.session_state:
+    st.session_state['last_activity'] = None
 
 now = time.time()
 
@@ -53,38 +56,96 @@ def logout_inactividad():
     st.session_state['func_id'] = None
     st.session_state['carrito'] = []
     st.session_state['ultimo_pedimento'] = None
+    st.session_state['last_activity'] = None
     st.query_params.clear()
 
-if st.session_state['usuario_actual'] is None:
-    if 'u' in st.query_params and 't' in st.query_params:
-        try:
-            last_t = float(st.query_params['t'])
-            if (now - last_t) <= MAX_INACTIVIDAD:
-                st.session_state['usuario_actual'] = st.query_params['u']
-                st.session_state['rol'] = st.query_params.get('r', 'BASICO')
-                st.session_state['func_id'] = int(st.query_params.get('fid', 0))
-                st.query_params['t'] = str(int(now))
-            else:
-                logout_inactividad()
-                st.warning("⏱️ Su sesión ha expirado por inactividad (más de 5 minutos). Por favor inicie sesión de nuevo.")
-        except Exception:
-            st.query_params.clear()
-else:
+def obtener_timestamp_query():
     if 't' in st.query_params:
+        raw_t = st.query_params['t']
+        if isinstance(raw_t, (list, tuple)):
+            raw_t = raw_t[0]
         try:
-            last_t = float(st.query_params['t'])
-            if (now - last_t) > MAX_INACTIVIDAD:
-                logout_inactividad()
-                st.warning("⏱️ Su sesión se ha cerrado por inactividad de 5 minutos.")
-                st.rerun()
-            else:
-                st.query_params['t'] = str(int(now))
-        except Exception:
-            pass
+            return float(raw_t)
+        except (ValueError, TypeError):
+            return None
+    return None
 
-# -------------------------------------------------------------------
-# OCULTAR BARRA SUPERIOR E ÍCONOS DE GITHUB A USUARIOS BÁSICOS
-# -------------------------------------------------------------------
+last_t = obtener_timestamp_query()
+last_active = st.session_state.get('last_activity') or last_t
+
+# 1. Recuperar sesión válida tras un refresco de página (F5)
+if st.session_state['usuario_actual'] is None:
+    if 'u' in st.query_params and last_t is not None:
+        if (now - last_t) <= MAX_INACTIVIDAD:
+            st.session_state['usuario_actual'] = st.query_params['u']
+            st.session_state['rol'] = st.query_params.get('r', 'BASICO')
+            st.session_state['func_id'] = int(st.query_params.get('fid', 0))
+            st.session_state['last_activity'] = now
+            st.query_params['t'] = str(int(now))
+        else:
+            logout_inactividad()
+            st.warning("⏱️ Su sesión ha expirado por inactividad (más de 5 minutos). Inicie sesión nuevamente.")
+    else:
+        st.query_params.clear()
+else:
+    # 2. Si ya hay sesión abierta, verificar inactividad
+    if last_active is not None and (now - last_active) > MAX_INACTIVIDAD:
+        logout_inactividad()
+        st.warning("⏱️ Su sesión se ha cerrado automáticamente por inactividad de más de 5 minutos.")
+        st.rerun()
+    else:
+        st.session_state['last_activity'] = now
+        st.query_params['t'] = str(int(now))
+
+# Temporizador en el navegador (cliente) para cierre automático sin clics
+def inyectar_temporizador_inactividad():
+    js_codigo = """
+    <script>
+    (function() {
+        const LIMITE_MS = 300000; // 5 minutos
+        let ultimaActividad = Date.now();
+        let reloj;
+
+        function cerrarSesionAuto() {
+            try {
+                window.top.location.href = window.top.location.origin + window.top.location.pathname;
+            } catch(e) {
+                window.location.href = window.location.origin + window.location.pathname;
+            }
+        }
+
+        function registrarAccion() {
+            const momento = Date.now();
+            if (momento - ultimaActividad > LIMITE_MS) {
+                cerrarSesionAuto();
+                return;
+            }
+            ultimaActividad = momento;
+            clearTimeout(reloj);
+            reloj = setTimeout(cerrarSesionAuto, LIMITE_MS);
+        }
+
+        const eventos = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+        eventos.forEach(ev => {
+            try {
+                window.top.addEventListener(ev, registrarAccion, true);
+            } catch(e) {}
+            try {
+                window.addEventListener(ev, registrarAccion, true);
+            } catch(e) {}
+        });
+
+        try {
+            window.top.addEventListener('focus', registrarAccion);
+        } catch(e) {}
+
+        registrarAccion();
+    })();
+    </script>
+    """
+    components.html(js_codigo, height=0, width=0)
+
+# Ocultar barra de desarrollador (Share, GitHub, Menú) a usuarios básicos
 if st.session_state['rol'] != "ADMIN":
     st.markdown("""
         <style>
@@ -110,6 +171,7 @@ def login(user, pwd):
             st.session_state['func_id'] = result[0]
             st.session_state['usuario_actual'] = result[1]
             st.session_state['rol'] = result[2]
+            st.session_state['last_activity'] = time.time()
             
             st.query_params['u'] = result[1]
             st.query_params['r'] = result[2]
@@ -170,14 +232,12 @@ def fijar_ultimo_consecutivo_db(nuevo_num):
     conn.close()
 
 def limpiar_historial_y_archivos():
-    # 1. Borrar base de datos de solicitudes
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     cursor.execute("DELETE FROM solicitudes")
     conn.commit()
     conn.close()
 
-    # 2. Borrar archivos físicos PDF y Excel generados en el servidor
     folder = "pedimentos_generados"
     if os.path.exists(folder):
         archivos = glob.glob(os.path.join(folder, "*"))
@@ -229,6 +289,9 @@ if st.session_state['usuario_actual'] is None:
                 else:
                     st.error("Por favor complete todos los campos.")
     st.stop()
+
+# Inyectar el temporizador activo en el navegador una vez autenticado
+inyectar_temporizador_inactividad()
 
 # -------------------------------------------------------------------
 # NAVEGACIÓN Y BOTÓN DE CIERRE DE SESIÓN DESTACADO
@@ -319,10 +382,10 @@ with tab_pedimentos:
                 
                 ids_guardados = []
                 for item in st.session_state['carrito']:
-                    cursor.execute('''
+                    cursor.execute("""
                         INSERT INTO solicitudes (funcionario_id, articulo_id, cantidad, es_valido, justificacion, estado)
                         VALUES (?, ?, ?, ?, ?, 'PENDIENTE')
-                    ''', (st.session_state['func_id'], item['codigo'], item['cantidad'], 1, justificacion_global))
+                    """, (st.session_state['func_id'], item['codigo'], item['cantidad'], 1, justificacion_global))
                     ids_guardados.append(cursor.lastrowid)
                 conn.commit()
                 
@@ -435,14 +498,14 @@ if st.session_state['rol'] == "ADMIN":
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico")
         conn = sqlite3.connect("database.db")
-        df_entregas = pd.read_sql_query('''
+        df_entregas = pd.read_sql_query("""
             SELECT f.nombre AS Funcionario, f.puesto AS Puesto, f.espacio_asignado AS Ubicacion, a.descripcion AS Articulo, 
                    s.cantidad AS Cantidad, s.fecha_aprobacion AS Fecha_Entrega, s.firmado_por AS Aprobador
             FROM solicitudes s 
             JOIN funcionarios f ON s.funcionario_id = f.id 
             JOIN articulos a ON s.articulo_id = a.codigo_grupal
             WHERE s.estado = 'APROBADO_FIRMA_DIGITAL'
-        ''', conn)
+        """, conn)
         conn.close()
         
         st.dataframe(df_entregas, use_container_width=True)
@@ -497,89 +560,4 @@ if st.session_state['rol'] == "ADMIN":
         activos_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'ACTIVO'])
         pendientes_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'INACTIVO'])
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Usuarios Registrados", total_users)
-        col2.metric("Usuarios Activos", activos_count)
-        col3.metric("Pendientes de Aprobar", pendientes_count)
-        
-        st.dataframe(df_todos_usuarios, use_container_width=True)
-        
-        st.write("**Editar datos o cambiar contraseña de un usuario:**")
-        user_sel_id = st.selectbox(
-            "Seleccione el Usuario:", 
-            df_todos_usuarios['id'].tolist(),
-            format_func=lambda x: f"ID {x} - {df_todos_usuarios[df_todos_usuarios['id'] == x]['nombre'].values[0]} (@{df_todos_usuarios[df_todos_usuarios['id'] == x]['username'].values[0]})"
-        )
-        
-        user_data = df_todos_usuarios[df_todos_usuarios['id'] == user_sel_id].iloc[0]
-        
-        with st.form("form_edit_user"):
-            e_nombre = st.text_input("Nombre Completo:", value=user_data['nombre'])
-            e_username = st.text_input("Nombre de Usuario (username):", value=user_data['username'])
-            e_rol = st.selectbox("Rol de Sistema:", ["BASICO", "ADMIN"], index=0 if user_data['rol'] == "BASICO" else 1)
-            e_pass = st.text_input("Nueva Contraseña (Dejar en blanco para mantener la actual):", type="password")
-            
-            if st.form_submit_button("💾 Guardar Cambios de Usuario", type="primary"):
-                cursor = conn.cursor()
-                if e_pass.strip():
-                    hash_nueva_pass = hashlib.sha256(e_pass.encode()).hexdigest()
-                    cursor.execute("""
-                        UPDATE funcionarios 
-                        SET nombre=?, username=?, rol=?, password=? 
-                        WHERE id=?
-                    """, (e_nombre, e_username, e_rol, hash_nueva_pass, user_sel_id))
-                else:
-                    cursor.execute("""
-                        UPDATE funcionarios 
-                        SET nombre=?, username=?, rol=? 
-                        WHERE id=?
-                    """, (e_nombre, e_username, e_rol, user_sel_id))
-                conn.commit()
-                sync_usuarios_excel()
-                st.success(f"¡Datos del usuario ID {user_sel_id} actualizados correctamente!")
-                st.rerun()
-        
-        conn.close()
-
-        st.markdown("---")
-        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos")
-        
-        num_actual = obtener_ultimo_consecutivo_db()
-        anio_actual = datetime.now().year
-        
-        st.info(f"El último pedimento registrado en el sistema fue el **#{num_actual:03d}-{anio_actual}**. El siguiente pedimento a generar será el **#{(num_actual + 1):03d}-{anio_actual}**.")
-        
-        nuevo_ultimo = st.number_input(
-            "Indique el ÚLTIMO número de pedimento generado (Ejemplo: ingrese 50 para que el siguiente pedimento sea el #051-2026):", 
-            min_value=0, 
-            max_value=999, 
-            value=num_actual, 
-            step=1
-        )
-        
-        if st.button("💾 Guardar Consecutivo de Pedimentos", type="primary"):
-            fijar_ultimo_consecutivo_db(int(nuevo_ultimo))
-            siguiente = int(nuevo_ultimo) + 1
-            st.success(f"¡Consecutivo actualizado! El próximo pedimento generado será el **#{siguiente:03d}-{anio_actual}**.")
-            st.rerun()
-
-        st.markdown("---")
-        st.subheader("3. Limpieza de Pedimentos y Archivos de Prueba")
-        st.write("Elimina la base de datos de solicitudes y **elimina todos los archivos PDF/Excel de la lista de firmas pendientes**.")
-        
-        if st.button("🗑️ Borrar Historial de Solicitudes y PDFs de Prueba"):
-            limpiar_historial_y_archivos()
-            st.success("¡Se ha limpiado el historial y se borraron todos los archivos PDF pendientes de firma!")
-            st.rerun()
-
-        st.markdown("---")
-        st.subheader("4. Reinicio Completo del Sistema")
-        st.warning("⚠️ **Atención:** Esta opción recreará la base de datos completa a su estado inicial de fábrica.")
-        
-        confirmar_reset = st.checkbox("Confirmo que deseo reinstalar el sistema por completo")
-        if confirmar_reset:
-            if st.button("🔥 Reinstalar Base de Datos Completa", type="primary"):
-                instalar_sistema()
-                limpiar_historial_y_archivos()
-                st.success("¡El sistema ha sido reinstalado a su estado de fábrica!")
-                st.rerun()
+        col1, col2, col
