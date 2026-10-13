@@ -14,6 +14,7 @@ import base64
 import re
 import urllib.request
 import pypdf
+import io
 
 from setup_inicial import instalar_sistema
 from exporter_bys import generar_formulario_oficial_bys
@@ -22,6 +23,22 @@ from mailer import enviar_correo_con_pdf_adjunto, enviar_correo_pedimento_firmad
 
 EXCEL_MAESTRO = "Control_Maestro_238_Articulos_DINADECO.xlsx"
 MAX_INACTIVIDAD = 300  # 5 minutos de inactividad
+CLAVE_TEMPORAL_DEFAULT = "Dinadeco2026*"
+
+LISTA_USUARIOS_OFICIALES = [
+    {"nombre": "Emmanuel Alvarez", "email": "ealvarez@dinadeco.go.cr", "username": "ealvarez", "puesto": "Misceláneo/a", "espacio": "Piso 3 (30%)", "rol": "BASICO"},
+    {"nombre": "Ana Orozco Sánchez", "email": "aorozco@dinadeco.go.cr", "username": "aorozco", "puesto": "Misceláneo/a", "espacio": "Piso 1 (30%)", "rol": "BASICO"},
+    {"nombre": "Ana Yancy González", "email": "agonzalez@dinadeco.go.cr", "username": "agonzalez", "puesto": "Recepcionista", "espacio": "Oficina General", "rol": "ADMIN"},
+    {"nombre": "Pamela Quirós", "email": "pquiros@dinadeco.go.cr", "username": "pquiros", "puesto": "Administrativa", "espacio": "Oficina General", "rol": "ADMIN"},
+    {"nombre": "Glenda Loría", "email": "gloria@dinadeco.go.cr", "username": "gloria", "puesto": "Administrativa", "espacio": "Oficina General", "rol": "ADMIN"},
+    {"nombre": "Ronald Montero", "email": "rmontero@dinadeco.go.cr", "username": "rmontero", "puesto": "Chofer", "espacio": "Flota Vehicular", "rol": "BASICO"},
+    {"nombre": "Randall Solano", "email": "rsolano@dinadeco.go.cr", "username": "rsolano", "puesto": "Chofer", "espacio": "Flota Vehicular", "rol": "BASICO"},
+    {"nombre": "Nelson Levey", "email": "nlevey@dinadeco.go.cr", "username": "nlevey", "puesto": "Chofer", "espacio": "Flota Vehicular", "rol": "BASICO"},
+    {"nombre": "Hans Arrieta Morales", "email": "harrieta@dinadeco.go.cr", "username": "harrieta", "puesto": "Oficial de Seguridad", "espacio": "Exteriores", "rol": "BASICO"},
+    {"nombre": "Henry Guevara", "email": "hguevara@dinadeco.go.cr", "username": "hguevara", "puesto": "Oficial de Seguridad", "espacio": "Exteriores", "rol": "BASICO"},
+    {"nombre": "Jorge Barquero", "email": "jbarquero@dinadeco.go.cr", "username": "jbarquero", "puesto": "Oficial de Seguridad", "espacio": "Exteriores", "rol": "BASICO"},
+    {"nombre": "Miguel Granados", "email": "mgranados@dinadeco.go.cr", "username": "mgranados", "puesto": "Oficial de Seguridad", "espacio": "Exteriores", "rol": "BASICO"}
+]
 
 # ==========================================
 # VERIFICACIÓN AUTOMÁTICA Y MIGRACIÓN BD
@@ -38,13 +55,13 @@ def verificar_base_datos():
         if not tabla_existe:
             instalar_sistema()
 
-    # Automigración de columnas para despacho y recepción física
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(solicitudes)")
-    cols_existentes = [row[1] for row in cursor.fetchall()]
     
-    nuevas_cols = {
+    # 1. Automigración de tabla solicitudes
+    cursor.execute("PRAGMA table_info(solicitudes)")
+    cols_sol = [row[1] for row in cursor.fetchall()]
+    nuevas_cols_sol = {
         'consecutivo': 'TEXT',
         'cantidad_despachada': 'INTEGER',
         'diferencia': 'INTEGER',
@@ -52,12 +69,37 @@ def verificar_base_datos():
         'fecha_despacho_real': 'TEXT',
         'ruta_pdf_escaneado': 'TEXT'
     }
-    for col, col_type in nuevas_cols.items():
-        if col not in cols_existentes:
+    for col, col_type in nuevas_cols_sol.items():
+        if col not in cols_sol:
             try:
                 cursor.execute(f"ALTER TABLE solicitudes ADD COLUMN {col} {col_type}")
             except Exception:
                 pass
+
+    # 2. Automigración de tabla funcionarios (debe_cambiar_password y email)
+    cursor.execute("PRAGMA table_info(funcionarios)")
+    cols_func = [row[1] for row in cursor.fetchall()]
+    if 'debe_cambiar_password' not in cols_func:
+        try:
+            cursor.execute("ALTER TABLE funcionarios ADD COLUMN debe_cambiar_password INTEGER DEFAULT 0")
+        except Exception:
+            pass
+    if 'email' not in cols_func:
+        try:
+            cursor.execute("ALTER TABLE funcionarios ADD COLUMN email TEXT")
+        except Exception:
+            pass
+
+    # 3. Sembrar automáticamente los 12 usuarios oficiales con contraseña temporal
+    hash_temp = hashlib.sha256(CLAVE_TEMPORAL_DEFAULT.encode()).hexdigest()
+    for u in LISTA_USUARIOS_OFICIALES:
+        cursor.execute("SELECT id FROM funcionarios WHERE username=?", (u["username"],))
+        if not cursor.fetchone():
+            cursor.execute("""
+                INSERT INTO funcionarios (nombre, puesto, espacio_asignado, username, email, password, rol, estado, debe_cambiar_password)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVO', 1)
+            """, (u["nombre"], u["puesto"], u["espacio"], u["username"], u["email"], hash_temp, u["rol"]))
+
     conn.commit()
     conn.close()
 
@@ -75,6 +117,8 @@ if 'ultimo_pedimento' not in st.session_state:
     st.session_state['ultimo_pedimento'] = None
 if 'last_activity' not in st.session_state:
     st.session_state['last_activity'] = None
+if 'debe_cambiar_password' not in st.session_state:
+    st.session_state['debe_cambiar_password'] = False
 
 now = time.time()
 
@@ -85,6 +129,7 @@ def logout_inactividad():
     st.session_state['carrito'] = []
     st.session_state['ultimo_pedimento'] = None
     st.session_state['last_activity'] = None
+    st.session_state['debe_cambiar_password'] = False
     st.query_params.clear()
 
 def obtener_timestamp_query():
@@ -109,6 +154,13 @@ if st.session_state['usuario_actual'] is None:
             st.session_state['func_id'] = int(st.query_params.get('fid', 0))
             st.session_state['last_activity'] = now
             st.query_params['t'] = str(int(now))
+            
+            conn = sqlite3.connect("database.db")
+            cursor = conn.cursor()
+            cursor.execute("SELECT COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE id=?", (st.session_state['func_id'],))
+            row_cp = cursor.fetchone()
+            conn.close()
+            st.session_state['debe_cambiar_password'] = bool(row_cp[0]) if row_cp else False
         else:
             logout_inactividad()
             st.warning("⏱️ Su sesión ha expirado por inactividad. Inicie sesión de nuevo.")
@@ -192,7 +244,7 @@ def login(user, pwd):
     hash_pwd = hashlib.sha256(pwd.encode()).hexdigest()
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nombre, rol, estado FROM funcionarios WHERE username=? AND password=?", (user, hash_pwd))
+    cursor.execute("SELECT id, nombre, rol, estado, COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE username=? AND password=?", (user, hash_pwd))
     result = cursor.fetchone()
     conn.close()
     
@@ -203,6 +255,7 @@ def login(user, pwd):
             st.session_state['func_id'] = result[0]
             st.session_state['usuario_actual'] = result[1]
             st.session_state['rol'] = result[2]
+            st.session_state['debe_cambiar_password'] = bool(result[4])
             st.session_state['last_activity'] = time.time()
             st.query_params['u'] = result[1]
             st.query_params['r'] = result[2]
@@ -276,30 +329,23 @@ def limpiar_historial_y_archivos():
                 except Exception:
                     pass
 
-# ===================================================================
-# FUNCIÓN DE LECTURA AUTOMÁTICA DEL ESCANEO FÍSICO (VISIÓN AI)
-# ===================================================================
 def procesar_pedimento_escaneado_ai(pdf_bytes, nombre_archivo):
-    # 1. Extraer la imagen principal del PDF escaneado
-    reader = pypdf.PdfReader(io_bytes := io.BytesIO(pdf_bytes))
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
     img_bytes = None
     for page in reader.pages:
         if page.images:
             img_bytes = page.images[0].data
             break
             
-    # 2. Detección del Consecutivo por nombre de archivo
     match = re.search(r'(\d{3}-\d{4})', nombre_archivo)
     consecutivo_detectado = match.group(1) if match else "051-2026"
     
-    # 3. Intentar extraer datos con Gemini Vision si la API Key está configurada
     api_key = st.secrets.get("gemini_api_key", None) if "gemini_api_key" in st.secrets else os.environ.get("GEMINI_API_KEY", None)
     
     if api_key and img_bytes:
         try:
             b64_img = base64.b64encode(img_bytes).decode("utf-8")
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-            
             prompt = """
             Eres un analizador de documentos oficiales de DINADECO. Analiza el pedimento escaneado con sellos.
             Extrae exactamente en JSON:
@@ -318,7 +364,6 @@ def procesar_pedimento_escaneado_ai(pdf_bytes, nombre_archivo):
             }
             Devuelve ÚNICAMENTE el JSON.
             """
-            
             data_payload = {
                 "contents": [{
                     "parts": [
@@ -327,7 +372,6 @@ def procesar_pedimento_escaneado_ai(pdf_bytes, nombre_archivo):
                     ]
                 }]
             }
-            
             req = urllib.request.Request(url, data=json.dumps(data_payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
             with urllib.request.urlopen(req, timeout=15) as response:
                 res_json = json.loads(response.read().decode('utf-8'))
@@ -337,7 +381,6 @@ def procesar_pedimento_escaneado_ai(pdf_bytes, nombre_archivo):
         except Exception:
             pass
 
-    # 4. Fallback Heurístico Automático (Usando base de datos interna)
     conn = sqlite3.connect("database.db")
     df_items = pd.read_sql_query("""
         SELECT a.descripcion, s.cantidad as cantidad_solicitada
@@ -357,7 +400,6 @@ def procesar_pedimento_escaneado_ai(pdf_bytes, nombre_archivo):
                 "diferencia": 0
             })
     else:
-        # Caso ejemplo representativo del PDF recibido
         articulos_res = [
             {"descripcion": "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL", "cantidad_solicitada": 3, "cantidad_despachada": 3, "diferencia": 0},
             {"descripcion": "PAÑO DE MICROFIBRA PARA LIMPIEZA", "cantidad_solicitada": 12, "cantidad_despachada": 12, "diferencia": 0},
@@ -375,8 +417,6 @@ def procesar_pedimento_escaneado_ai(pdf_bytes, nombre_archivo):
 # -------------------------------------------------------------------
 # PANTALLA DE LOGIN Y REGISTRO
 # -------------------------------------------------------------------
-import io
-
 if st.session_state['usuario_actual'] is None:
     tab_login, tab_registro = st.tabs(["🔑 Iniciar Sesión", "📝 Solicitar Acceso (Nuevo Usuario)"])
     
@@ -407,7 +447,7 @@ if st.session_state['usuario_actual'] is None:
                         st.error("Ese nombre de usuario ya existe.")
                     else:
                         hash_p = hashlib.sha256(n_pass.encode()).hexdigest()
-                        cursor.execute("INSERT INTO funcionarios (nombre, puesto, espacio_asignado, username, password, rol, estado) VALUES (?, ?, ?, ?, ?, 'BASICO', 'INACTIVO')", 
+                        cursor.execute("INSERT INTO funcionarios (nombre, puesto, espacio_asignado, username, password, rol, estado, debe_cambiar_password) VALUES (?, ?, ?, ?, ?, 'BASICO', 'INACTIVO', 0)", 
                                        (n_nombre, n_puesto, n_espacio, n_user, hash_p))
                         conn.commit()
                         conn.close()
@@ -415,6 +455,40 @@ if st.session_state['usuario_actual'] is None:
                         st.success("Cuenta registrada. Jenier o Gabriela deben aprobar el ingreso.")
                 else:
                     st.error("Por favor complete todos los campos.")
+    st.stop()
+
+# ===================================================================
+# PANTALLA OBLIGATORIA: CAMBIO DE CONTRASEÑA EN EL PRIMER INICIO
+# ===================================================================
+if st.session_state.get('debe_cambiar_password', False):
+    st.warning("🔒 **Primer Inicio de Sesión:** Por motivos de seguridad institucional, debe definir una contraseña personal antes de continuar.")
+    with st.form("form_cambio_clave_obligatorio"):
+        st.write(f"Usuario: **{st.session_state['usuario_actual']}**")
+        nueva_clave = st.text_input("Nueva Contraseña:", type="password")
+        conf_clave = st.text_input("Confirmar Nueva Contraseña:", type="password")
+        
+        col_c1, col_c2 = st.columns([1, 4])
+        if col_c1.form_submit_button("💾 Guardar y Entrar", type="primary"):
+            if not nueva_clave or len(nueva_clave) < 6:
+                st.error("La nueva contraseña debe tener al menos 6 caracteres.")
+            elif nueva_clave != conf_clave:
+                st.error("Las contraseñas no coinciden.")
+            elif nueva_clave == CLAVE_TEMPORAL_DEFAULT:
+                st.error("No puede utilizar la misma contraseña temporal provisional.")
+            else:
+                hash_nueva = hashlib.sha256(nueva_clave.encode()).hexdigest()
+                conn = sqlite3.connect("database.db")
+                cursor = conn.cursor()
+                cursor.execute("UPDATE funcionarios SET password=?, debe_cambiar_password=0 WHERE id=?", (hash_nueva, st.session_state['func_id']))
+                conn.commit()
+                conn.close()
+                sync_usuarios_excel()
+                st.session_state['debe_cambiar_password'] = False
+                st.success("✅ ¡Contraseña actualizada exitosamente! Ingresando al sistema...")
+                time.sleep(1)
+                st.rerun()
+        if col_c2.form_submit_button("Cerrar Sesión"):
+            logout()
     st.stop()
 
 inyectar_temporizador_inactividad()
@@ -532,7 +606,6 @@ with tab_pedimentos:
                 hash_temp = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
                 consecutivo, ruta_excel = generar_formulario_oficial_bys(ids_guardados, "Departamento de Servicios Generales", "Pendiente de Firma", hash_temp)
                 
-                # Asignar consecutivo a las solicitudes creadas
                 placeholders = ",".join("?" * len(ids_guardados))
                 cursor.execute(f"UPDATE solicitudes SET consecutivo = ? WHERE id IN ({placeholders})", [consecutivo] + ids_guardados)
                 conn.commit()
@@ -639,7 +712,7 @@ if st.session_state['rol'] == "ADMIN":
                 st.error(f"❌ Error de Validación: {detalle_firma}")
 
     # ===============================================================
-    # TAB 3: RECEPCIÓN Y DESPACHO FÍSICO DE BODEGA (NUEVA PESTAÑA)
+    # TAB 3: RECEPCIÓN Y DESPACHO FÍSICO DE BODEGA
     # ===============================================================
     with tab_recepcion:
         st.header("📦 Recepción de Bodega y Verificación de Entregas")
@@ -660,7 +733,6 @@ if st.session_state['rol'] == "ADMIN":
             
             st.success(f"✅ **Documento Mapeado con Éxito:** Pedimento #{consecutivo_encontrado}")
             
-            # Tarjeta de Datos Detectados
             col_m1, col_m2, col_m3 = st.columns(3)
             col_m1.metric("Consecutivo", f"#{consecutivo_encontrado}")
             col_m2.metric("Fecha de Retiro Físico", fecha_desp)
@@ -669,7 +741,6 @@ if st.session_state['rol'] == "ADMIN":
             st.markdown("---")
             st.subheader("📋 Cotejo de Insumos: Solicitado vs. Despachado Real")
             
-            # Tabla de comparación con alerta visual de diferencias
             hay_diferencias = False
             items_para_tabla = []
             
@@ -699,7 +770,6 @@ if st.session_state['rol'] == "ADMIN":
             else:
                 st.info("👍 Todos los artículos fueron entregados completos según lo solicitado.")
                 
-            # Guardado permanente
             os.makedirs("pedimentos_escaneados", exist_ok=True)
             ruta_pdf_final = os.path.join("pedimentos_escaneados", f"Escaneado_{consecutivo_encontrado}.pdf")
             
@@ -801,10 +871,10 @@ if st.session_state['rol'] == "ADMIN":
         st.write("Herramientas exclusivas para el usuario Administrador Master.")
         
         st.markdown("---")
-        st.subheader("1. Gestión de Usuarios y Contraseñas")
+        st.subheader("1. Gestión de Usuarios, Contraseñas y Eliminación de Perfiles")
         
         conn = sqlite3.connect("database.db")
-        df_todos_usuarios = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username, rol, estado FROM funcionarios", conn)
+        df_todos_usuarios = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado, username, email, rol, estado, debe_cambiar_password FROM funcionarios", conn)
         
         total_users = len(df_todos_usuarios)
         activos_count = len(df_todos_usuarios[df_todos_usuarios['estado'] == 'ACTIVO'])
@@ -817,9 +887,9 @@ if st.session_state['rol'] == "ADMIN":
         
         st.dataframe(df_todos_usuarios, use_container_width=True)
         
-        st.write("**Editar datos o cambiar contraseña de un usuario:**")
+        st.write("**Editar datos, restablecer contraseñas o eliminar un usuario:**")
         user_sel_id = st.selectbox(
-            "Seleccione el Usuario:", 
+            "Seleccione el Usuario a gestionar:", 
             df_todos_usuarios['id'].tolist(),
             format_func=lambda x: f"ID {x} - {df_todos_usuarios[df_todos_usuarios['id'] == x]['nombre'].values[0]} (@{df_todos_usuarios[df_todos_usuarios['id'] == x]['username'].values[0]})"
         )
@@ -829,28 +899,46 @@ if st.session_state['rol'] == "ADMIN":
         with st.form("form_edit_user"):
             e_nombre = st.text_input("Nombre Completo:", value=user_data['nombre'])
             e_username = st.text_input("Nombre de Usuario (username):", value=user_data['username'])
+            e_email = st.text_input("Correo Institucional:", value=user_data['email'] if pd.notna(user_data['email']) else "")
             e_rol = st.selectbox("Rol de Sistema:", ["BASICO", "ADMIN"], index=0 if user_data['rol'] == "BASICO" else 1)
             e_pass = st.text_input("Nueva Contraseña (Dejar en blanco para mantener la actual):", type="password")
+            e_forzar_cambio = st.checkbox("Forzar cambio de contraseña en su próximo inicio de sesión", value=bool(user_data['debe_cambiar_password']))
             
             if st.form_submit_button("💾 Guardar Cambios de Usuario", type="primary"):
                 cursor = conn.cursor()
+                flag_cambio = 1 if e_forzar_cambio else 0
                 if e_pass.strip():
                     hash_nueva_pass = hashlib.sha256(e_pass.encode()).hexdigest()
                     cursor.execute("""
                         UPDATE funcionarios 
-                        SET nombre=?, username=?, rol=?, password=? 
+                        SET nombre=?, username=?, email=?, rol=?, password=?, debe_cambiar_password=? 
                         WHERE id=?
-                    """, (e_nombre, e_username, e_rol, hash_nueva_pass, user_sel_id))
+                    """, (e_nombre, e_username, e_email, e_rol, hash_nueva_pass, flag_cambio, user_sel_id))
                 else:
                     cursor.execute("""
                         UPDATE funcionarios 
-                        SET nombre=?, username=?, rol=? 
+                        SET nombre=?, username=?, email=?, rol=?, debe_cambiar_password=? 
                         WHERE id=?
-                    """, (e_nombre, e_username, e_rol, user_sel_id))
+                    """, (e_nombre, e_username, e_email, e_rol, flag_cambio, user_sel_id))
                 conn.commit()
                 sync_usuarios_excel()
                 st.success(f"¡Datos del usuario ID {user_sel_id} actualizados correctamente!")
                 st.rerun()
+
+        # Opción para eliminar usuario
+        st.markdown("#### 🗑️ Eliminar Perfil de Usuario")
+        confirmar_eliminar = st.checkbox(f"Confirmo que deseo eliminar de forma definitiva al usuario ID {user_sel_id} ({user_data['nombre']})")
+        if confirmar_eliminar:
+            if st.button("❌ Eliminar Perfil Definitivamente", type="secondary"):
+                if user_sel_id == st.session_state['func_id']:
+                    st.error("No puede eliminar su propio perfil mientras tiene la sesión activa.")
+                else:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM funcionarios WHERE id=?", (user_sel_id,))
+                    conn.commit()
+                    sync_usuarios_excel()
+                    st.success(f"El perfil de {user_data['nombre']} ha sido eliminado del sistema.")
+                    st.rerun()
         
         conn.close()
 
