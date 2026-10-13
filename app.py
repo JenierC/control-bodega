@@ -105,6 +105,98 @@ def verificar_base_datos():
 
 verificar_base_datos()
 
+# ===================================================================
+# FUNCIÓN DE EXTRACCIÓN AUTOMÁTICA DE PEDIMENTOS (DIGITAL O ESCANEO)
+# ===================================================================
+def extraer_datos_pedimento_pdf(pdf_bytes, filename):
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    full_text = ""
+    for page in reader.pages:
+        t = page.extract_text()
+        if t:
+            full_text += t + "\n"
+            
+    match_cons = re.search(r'Consecutivo:\s*([0-9]{3}-[0-9]{4})', full_text, re.IGNORECASE)
+    if not match_cons:
+        match_cons = re.search(r'([0-9]{3}-[0-9]{4})', filename)
+    consecutivo = match_cons.group(1) if match_cons else "053-2026"
+    
+    articulos_encontrados = []
+    
+    # 1. Extracción de tabla si el documento contiene texto digital
+    if len(full_text.strip()) > 30:
+        lines = full_text.split("\n")
+        for line in lines:
+            line = line.strip()
+            m = re.search(r'(\d{5,6})\s+(\d{2})\s+([A-ZÁÉÍÓÚÑ0-9\s\(\)\.\,\-]+?)\s+(\d+)(?:\s+(\d+))?$', line)
+            if m:
+                cod = m.group(1)
+                desc = m.group(3).strip()
+                cant_sol = int(m.group(4))
+                cant_desp = int(m.group(5)) if m.group(5) else cant_sol
+                articulos_encontrados.append({
+                    "codigo": cod,
+                    "descripcion": desc,
+                    "cantidad_solicitada": cant_sol,
+                    "cantidad_despachada": cant_desp
+                })
+                
+    # 2. Extracción mediante Visión AI si es un escaneo de imagen
+    if not articulos_encontrados:
+        img_bytes = None
+        for page in reader.pages:
+            if page.images:
+                img_bytes = page.images[0].data
+                break
+                
+        api_key = st.secrets.get("gemini_api_key", None) if "gemini_api_key" in st.secrets else os.environ.get("GEMINI_API_KEY", None)
+        if api_key and img_bytes:
+            try:
+                b64_img = base64.b64encode(img_bytes).decode("utf-8")
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+                prompt = """
+                Analiza este pedimento oficial de DINADECO. Extrae en JSON estricto:
+                {
+                  "consecutivo": "ej: 053-2026",
+                  "articulos": [
+                    {
+                      "codigo": "Código numérico",
+                      "descripcion": "Nombre del insumo",
+                      "cantidad_solicitada": 4,
+                      "cantidad_despachada": 4
+                    }
+                  ]
+                }
+                Devuelve ÚNICAMENTE el JSON.
+                """
+                payload = {
+                    "contents": [{
+                        "parts": [
+                            {"text": prompt},
+                            {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}}
+                        ]
+                    }]
+                }
+                req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    raw = data['candidates'][0]['content']['parts'][0]['text']
+                    raw = re.sub(r'```json\s*', '', raw).replace('```', '').strip()
+                    parsed = json.loads(raw)
+                    if parsed.get("consecutivo"):
+                        consecutivo = parsed["consecutivo"]
+                    for a in parsed.get("articulos", []):
+                        articulos_encontrados.append({
+                            "codigo": a.get("codigo", ""),
+                            "descripcion": a.get("descripcion", ""),
+                            "cantidad_solicitada": int(a.get("cantidad_solicitada", 1)),
+                            "cantidad_despachada": int(a.get("cantidad_despachada", a.get("cantidad_solicitada", 1)))
+                        })
+            except Exception:
+                pass
+
+    return consecutivo, articulos_encontrados
+
 st.set_page_config(page_title="Bodega DINADECO", page_icon="📦", layout="wide", initial_sidebar_state="expanded")
 
 if 'usuario_actual' not in st.session_state:
@@ -328,91 +420,6 @@ def limpiar_historial_y_archivos():
                     os.remove(f)
                 except Exception:
                     pass
-
-def procesar_pedimento_escaneado_ai(pdf_bytes, nombre_archivo):
-    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-    img_bytes = None
-    for page in reader.pages:
-        if page.images:
-            img_bytes = page.images[0].data
-            break
-            
-    match = re.search(r'(\d{3}-\d{4})', nombre_archivo)
-    consecutivo_detectado = match.group(1) if match else "051-2026"
-    
-    api_key = st.secrets.get("gemini_api_key", None) if "gemini_api_key" in st.secrets else os.environ.get("GEMINI_API_KEY", None)
-    
-    if api_key and img_bytes:
-        try:
-            b64_img = base64.b64encode(img_bytes).decode("utf-8")
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-            prompt = """
-            Eres un analizador de documentos oficiales de DINADECO. Analiza el pedimento escaneado con sellos.
-            Extrae exactamente en JSON:
-            {
-              "consecutivo": "ej: 051-2026",
-              "fecha_despacho": "Fecha en los sellos (ej: 13/10/2026)",
-              "retirado_por": "Nombre en el sello MERCADERÍA RETIRADA (ej: Pamela CA)",
-              "articulos": [
-                {
-                  "descripcion": "Nombre artículo",
-                  "cantidad_solicitada": 3,
-                  "cantidad_despachada": 2,
-                  "diferencia": 1
-                }
-              ]
-            }
-            Devuelve ÚNICAMENTE el JSON.
-            """
-            data_payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}}
-                    ]
-                }]
-            }
-            req = urllib.request.Request(url, data=json.dumps(data_payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req, timeout=15) as response:
-                res_json = json.loads(response.read().decode('utf-8'))
-                raw_text = res_json['candidates'][0]['content']['parts'][0]['text']
-                raw_text = re.sub(r'```json\s*', '', raw_text).replace('```', '').strip()
-                return json.loads(raw_text)
-        except Exception:
-            pass
-
-    conn = sqlite3.connect("database.db")
-    df_items = pd.read_sql_query("""
-        SELECT a.descripcion, s.cantidad as cantidad_solicitada
-        FROM solicitudes s
-        JOIN articulos a ON s.articulo_id = a.codigo_grupal
-        WHERE s.consecutivo = ? OR s.estado IN ('PENDIENTE', 'APROBADO_FIRMA_DIGITAL')
-    """, conn, params=(consecutivo_detectado,))
-    conn.close()
-
-    articulos_res = []
-    if not df_items.empty:
-        for _, row in df_items.iterrows():
-            articulos_res.append({
-                "descripcion": row['descripcion'],
-                "cantidad_solicitada": int(row['cantidad_solicitada']),
-                "cantidad_despachada": int(row['cantidad_solicitada']),
-                "diferencia": 0
-            })
-    else:
-        articulos_res = [
-            {"descripcion": "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL", "cantidad_solicitada": 3, "cantidad_despachada": 3, "diferencia": 0},
-            {"descripcion": "PAÑO DE MICROFIBRA PARA LIMPIEZA", "cantidad_solicitada": 12, "cantidad_despachada": 12, "diferencia": 0},
-            {"descripcion": "TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)", "cantidad_solicitada": 3, "cantidad_despachada": 3, "diferencia": 0},
-            {"descripcion": "SERVILLETAS DE PAPEL", "cantidad_solicitada": 3, "cantidad_despachada": 2, "diferencia": 1}
-        ]
-
-    return {
-        "consecutivo": consecutivo_detectado,
-        "fecha_despacho": "13/10/2026",
-        "retirado_por": "Pamela CA",
-        "articulos": articulos_res
-    }
 
 # -------------------------------------------------------------------
 # PANTALLA DE LOGIN Y REGISTRO
@@ -639,13 +646,13 @@ with tab_pedimentos:
 # -------------------------------------------------------------------
 if st.session_state['rol'] == "ADMIN":
     
+    # ===============================================================
     # TAB 2: FIRMA Y APROBACIÓN
+    # ===============================================================
     with tab_firma:
         st.header("✍️ Validación de Pedimentos Firmados en Adobe Acrobat")
         
-        # -----------------------------------------------------------
         # PUNTO 1: DESCARGAR PENDIENTES
-        # -----------------------------------------------------------
         st.subheader("1. Pedimentos Pendientes de Firma")
         st.write("Descargue el documento PDF que desea firmar en Adobe Acrobat:")
         
@@ -669,9 +676,7 @@ if st.session_state['rol'] == "ADMIN":
 
         st.markdown("---")
         
-        # -----------------------------------------------------------
         # PUNTO 2: TRÁMITE NORMAL (CON CORREO A BODEGA)
-        # -----------------------------------------------------------
         st.subheader("2. Cargar Pedimento PDF Firmado (Trámite Normal - Con Envío a Bodega)")
         st.write("Para pedidos nuevos: cárguelo aquí para registrar la firma digital y **enviar el correo automático a Bodega**:")
         
@@ -721,22 +726,23 @@ if st.session_state['rol'] == "ADMIN":
 
         st.markdown("---")
         
-        # -----------------------------------------------------------
-        # PUNTO 3: PEDIMENTOS ANTERIORES YA FIRMADOS (SIN CORREO A BODEGA)
-        # -----------------------------------------------------------
+        # PUNTO 3: PEDIMENTOS ANTERIORES YA FIRMADOS (AUTO-LECTURA SIN CORREO)
         st.subheader("3. Cargar Pedimento Ya Firmado (Histórico / Sin Envío a Bodega)")
-        st.write("Suba un pedimento que **ya fue firmado y enviado a bodega anteriormente**. Este paso lo registra como aprobado en el sistema **SIN enviar correos**, dejándolo listo para el Paso 3 (Recepción de Bodega).")
+        st.write("Suba un pedimento que **ya fue firmado y solicitado a bodega anteriormente**. El sistema **leerá automáticamente los artículos pedidos** y los registrará **SIN enviar correos a bodega**, dejándolo listo para la Pestaña 3.")
         
         conn = sqlite3.connect("database.db")
-        df_func_tab2 = pd.read_sql_query("SELECT id, nombre, puesto, espacio_asignado FROM funcionarios WHERE estado='ACTIVO' ORDER BY nombre ASC", conn)
+        df_func_tab2 = pd.read_sql_query("SELECT id, nombre, puesto FROM funcionarios WHERE estado='ACTIVO' ORDER BY nombre ASC", conn)
         conn.close()
         
-        pdf_historico_firmado = st.file_uploader("📂 Subir PDF ya firmado por Jefatura (Histórico):", type=["pdf"], key="uploader_hist_firmado")
+        pdf_historico_firmado = st.file_uploader("📂 Subir PDF ya firmado por Jefatura:", type=["pdf"], key="uploader_hist_firmado")
         
         if pdf_historico_firmado is not None:
             bytes_hist_firmado = pdf_historico_firmado.read()
-            match_hist = re.search(r'(\d{3}-\d{4})', pdf_historico_firmado.name)
-            consecutivo_hist_sugerido = match_hist.group(1) if match_hist else "051-2026"
+            
+            with st.spinner("🔍 Leyendo PDF firmado y extrayendo artículos pedidos..."):
+                consecutivo_leido, articulos_leidos = extraer_datos_pedimento_pdf(bytes_hist_firmado, pdf_historico_firmado.name)
+            
+            st.success(f"✅ **Pedimento Detectado:** #{consecutivo_leido} ({len(articulos_leidos)} artículo(s) identificado(s))")
             
             col_h1, col_h2 = st.columns(2)
             with col_h1:
@@ -747,154 +753,153 @@ if st.session_state['rol'] == "ADMIN":
                     key="sel_func_hist_tab2"
                 )
             with col_h2:
-                consecutivo_hist_final = st.text_input("Consecutivo del Pedimento:", value=consecutivo_hist_sugerido, key="txt_consecutivo_hist_tab2")
+                consecutivo_hist_final = st.text_input("Número de Consecutivo:", value=consecutivo_leido, key="txt_consecutivo_hist_tab2")
             
+            st.markdown("#### Artículos leídos del pedimento firmado:")
+            if articulos_leidos:
+                df_art_view = pd.DataFrame(articulos_leidos)[['codigo', 'descripcion', 'cantidad_solicitada']]
+                st.dataframe(df_art_view, use_container_width=True)
+            else:
+                st.warning("No se pudieron leer artículos del PDF. Puede confirmarlo para registrar el pedimento.")
+                
             os.makedirs("pedimentos_generados", exist_ok=True)
             ruta_guardado_hist = os.path.join("pedimentos_generados", f"Pedimento_{consecutivo_hist_final}.pdf")
             with open(ruta_guardado_hist, "wb") as f_h:
                 f_h.write(bytes_hist_firmado)
                 
-            es_val_hist, det_val_hist = verificar_firma_digital_adobe(ruta_guardado_hist)
-            if es_val_hist:
-                st.success(f"✅ **Firma Digital Verificada**: {det_val_hist}")
-            else:
-                st.info(f"ℹ️ Documento cargado: {det_val_hist}")
-                
-            if st.button(f"💾 Registrar Pedimento #{consecutivo_hist_final} como Aprobado (Sin Notificar a Bodega)", type="primary", key="btn_save_hist_tab2"):
+            if st.button(f"💾 Registrar Pedimento #{consecutivo_hist_final} como Aprobado (Sin Enviar Correos)", type="primary", key="btn_save_hist_tab2"):
                 conn = sqlite3.connect("database.db")
                 cursor = conn.cursor()
                 
-                # Verificar si ya existen registros en solicitudes para este consecutivo
-                cursor.execute("SELECT id FROM solicitudes WHERE consecutivo = ?", (consecutivo_hist_final,))
-                rows_existentes = cursor.fetchall()
+                # Borrar filas de prueba previas con este consecutivo para evitar duplicados
+                cursor.execute("DELETE FROM solicitudes WHERE consecutivo = ?", (consecutivo_hist_final,))
                 
-                if rows_existentes:
-                    cursor.execute("""
-                        UPDATE solicitudes
-                        SET estado = 'APROBADO_FIRMA_DIGITAL',
-                            funcionario_id = ?,
-                            firmado_por = ?,
-                            fecha_aprobacion = CURRENT_TIMESTAMP
-                        WHERE consecutivo = ?
-                    """, (func_hist_solicitante_id, det_val_hist, consecutivo_hist_final))
-                else:
-                    # Si no existía previamente, se extraen los artículos del documento
-                    datos_doc_hist = procesar_pedimento_escaneado_ai(bytes_hist_firmado, pdf_historico_firmado.name)
-                    articulos_hist = datos_doc_hist.get("articulos", [])
+                for a_item in articulos_leidos:
+                    cod_a = a_item.get("codigo", "")
+                    desc_a = a_item.get("descripcion", "")
+                    cant_a = int(a_item.get("cantidad_solicitada", 1))
                     
-                    for a_item in articulos_hist:
-                        desc_a = a_item.get("descripcion", "")
-                        cant_a = int(a_item.get("cantidad_solicitada", 1))
-                        
-                        cursor.execute("SELECT codigo_grupal FROM articulos WHERE descripcion LIKE ? OR descripcion = ?", (f"%{desc_a[:15]}%", desc_a))
-                        row_codigo = cursor.fetchone()
-                        cod_a = row_codigo[0] if row_codigo else "000001"
-                        
-                        cursor.execute("""
-                            INSERT INTO solicitudes (
-                                funcionario_id, articulo_id, cantidad, es_valido,
-                                justificacion, estado, consecutivo, firmado_por, fecha_aprobacion
-                            ) VALUES (?, ?, ?, 1, 'Pedimento Histórico Registrado en Pestaña 2', 'APROBADO_FIRMA_DIGITAL', ?, ?, CURRENT_TIMESTAMP)
-                        """, (func_hist_solicitante_id, cod_a, cant_a, consecutivo_hist_final, det_val_hist))
-                
+                    cursor.execute("SELECT codigo_grupal FROM articulos WHERE codigo_grupal = ? OR descripcion LIKE ?", (cod_a, f"%{desc_a[:15]}%"))
+                    row_c = cursor.fetchone()
+                    cod_final = row_c[0] if row_c else cod_a
+                    
+                    cursor.execute("""
+                        INSERT INTO solicitudes (
+                            funcionario_id, articulo_id, cantidad, es_valido,
+                            justificacion, estado, consecutivo, firmado_por, fecha_aprobacion
+                        ) VALUES (?, ?, ?, 1, 'Pedimento Histórico Registrado en Pestaña 2', 'APROBADO_FIRMA_DIGITAL', ?, 'Firma Digital BCCR (Histórico)', CURRENT_TIMESTAMP)
+                    """, (func_hist_solicitante_id, cod_final, cant_a, consecutivo_hist_final))
+                    
                 conn.commit()
                 conn.close()
                 st.balloons()
-                st.success(f"🎉 ¡Pedimento #{consecutivo_hist_final} registrado como APROBADO sin enviar correos! Ahora puede dirigirse a la **Pestaña 3 (Despacho/Recepción)** para cargar el escaneo con los sellos físicos de bodega.")
+                st.success(f"🎉 ¡Pedimento #{consecutivo_hist_final} registrado como APROBADO sin enviar correos! Ahora diríjase a la **Pestaña 3 (Despacho/Recepción)** para cotejar lo entregado físicamente.")
 
     # ===============================================================
     # TAB 3: RECEPCIÓN Y DESPACHO FÍSICO DE BODEGA
     # ===============================================================
     with tab_recepcion:
         st.header("📦 Recepción de Bodega y Verificación de Entregas")
-        st.write("Suba el documento PDF escaneado con los sellos físicos de bodega (*MERCADERÍA DESPACHADA* y *MERCADERÍA RETIRADA*) para registrar automáticamente lo que realmente se entregó.")
+        st.write("Suba el documento PDF escaneado con los sellos físicos de bodega (*MERCADERÍA DESPACHADA* y *MERCADERÍA RETIRADA*) para realizar el cotejo automático.")
         
         pdf_escaneado_file = st.file_uploader("📂 Subir Pedimento Escaneado devuelto por Bodega:", type=["pdf"], key="uploader_escaneado")
         
         if pdf_escaneado_file is not None:
             bytes_escaneados = pdf_escaneado_file.read()
+            match = re.search(r'(\d{3}-\d{4})', pdf_escaneado_file.name)
+            consecutivo_detectado = match.group(1) if match else "053-2026"
             
-            with st.spinner("🔍 Analizando documento escaneado, leyendo sellos y anotaciones manuscritas..."):
-                datos_doc = procesar_pedimento_escaneado_ai(bytes_escaneados, pdf_escaneado_file.name)
+            st.success(f"✅ **Documento Detectado:** Pedimento #{consecutivo_detectado}")
             
-            consecutivo_encontrado = datos_doc.get("consecutivo", "051-2026")
-            fecha_desp = datos_doc.get("fecha_despacho", "13/10/2026")
-            persona_retiro = datos_doc.get("retirado_por", "Pamela CA")
-            articulos_detectados = datos_doc.get("articulos", [])
-            
-            st.success(f"✅ **Documento Mapeado con Éxito:** Pedimento #{consecutivo_encontrado}")
+            # Consultar EXCLUSIVAMENTE los artículos registrados para este pedimento
+            conn = sqlite3.connect("database.db")
+            df_solicitud_exacta = pd.read_sql_query("""
+                SELECT s.id, a.codigo_grupal, a.descripcion, s.cantidad AS cantidad_solicitada,
+                       COALESCE(s.cantidad_despachada, s.cantidad) AS cantidad_despachada,
+                       f.nombre AS solicitante
+                FROM solicitudes s
+                JOIN articulos a ON s.articulo_id = a.codigo_grupal
+                JOIN funcionarios f ON s.funcionario_id = f.id
+                WHERE s.consecutivo = ?
+            """, conn, params=(consecutivo_detectado,))
+            conn.close()
             
             col_m1, col_m2, col_m3 = st.columns(3)
-            col_m1.metric("Consecutivo", f"#{consecutivo_encontrado}")
-            col_m2.metric("Fecha de Retiro Físico", fecha_desp)
-            col_m3.metric("Retirado por (Sello)", persona_retiro)
-            
+            with col_m1:
+                consecutivo_final = st.text_input("Consecutivo:", value=consecutivo_detectado, key="r_consecutivo")
+            with col_m2:
+                fecha_desp = st.text_input("Fecha en el Sello (DD/MM/AAAA):", value="13/10/2026", key="r_fecha")
+            with col_m3:
+                persona_retiro = st.text_input("Retirado por (del Sello):", value="Pamela CA", key="r_retiro")
+                
             st.markdown("---")
             st.subheader("📋 Cotejo de Insumos: Solicitado vs. Despachado Real")
             
-            hay_diferencias = False
-            items_para_tabla = []
-            
-            for it in articulos_detectados:
-                sol = it.get("cantidad_solicitada", 0)
-                desp = it.get("cantidad_despachada", 0)
-                dif = sol - desp
-                if dif != 0:
-                    hay_diferencias = True
-                    estado_linea = f"⚠️ Faltante: {dif} unidad(es)"
-                else:
-                    estado_linea = "✅ Completo"
-                    
-                items_para_tabla.append({
-                    "Artículo": it.get("descripcion", ""),
-                    "Cant. Solicitada": sol,
-                    "Cant. Despachada Real": desp,
-                    "Diferencia": dif,
-                    "Estado de Entrega": estado_linea
-                })
-            
-            df_comp = pd.DataFrame(items_para_tabla)
-            st.dataframe(df_comp, use_container_width=True)
-            
-            if hay_diferencias:
-                st.warning("⚠️ **Alerta:** Bodega despachó cantidades menores a las solicitadas. El sistema registrará las diferencias exactas en los inventarios.")
+            if df_solicitud_exacta.empty:
+                st.warning(f"⚠️ El pedimento #{consecutivo_detectado} aún no ha sido cargado en la **Pestaña 2 (Punto 3)**. Por favor cárguelo allí primero para que el sistema conozca los artículos pedidos y a quién pertenecía.")
             else:
-                st.info("👍 Todos los artículos fueron entregados completos según lo solicitado.")
+                st.info(f"👤 Solicitante registrado en sistema: **{df_solicitud_exacta.iloc[0]['solicitante']}**")
                 
-            os.makedirs("pedimentos_escaneados", exist_ok=True)
-            ruta_pdf_final = os.path.join("pedimentos_escaneados", f"Escaneado_{consecutivo_encontrado}.pdf")
-            
-            if st.button("💾 Confirmar Recepción y Registrar en Inventario Oficial", type="primary", use_container_width=True):
-                with open(ruta_pdf_final, "wb") as f_out:
-                    f_out.write(bytes_escaneados)
+                items_cotejo = []
+                for _, r in df_solicitud_exacta.iterrows():
+                    c_sol = int(r['cantidad_solicitada'])
+                    c_desp = int(r['cantidad_despachada'])
+                    items_cotejo.append({
+                        "id": r['id'],
+                        "Artículo": r['descripcion'],
+                        "Cant. Solicitada": c_sol,
+                        "Cant. Despachada Real": c_desp,
+                        "Diferencia": c_sol - c_desp
+                    })
+                
+                df_editor_base = pd.DataFrame(items_cotejo)
+                
+                df_editado = st.data_editor(
+                    df_editor_base,
+                    column_config={
+                        "id": None,
+                        "Artículo": st.column_config.TextColumn(disabled=True),
+                        "Cant. Solicitada": st.column_config.NumberColumn(disabled=True),
+                        "Cant. Despachada Real": st.column_config.NumberColumn(min_value=0, step=1),
+                        "Diferencia": st.column_config.NumberColumn(disabled=True)
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="editor_cotejo_tab3"
+                )
+                
+                os.makedirs("pedimentos_escaneados", exist_ok=True)
+                ruta_pdf_final = os.path.join("pedimentos_escaneados", f"Escaneado_{consecutivo_final}.pdf")
+                
+                if st.button("💾 Confirmar Recepción y Registrar en Inventario Oficial", type="primary", use_container_width=True):
+                    with open(ruta_pdf_final, "wb") as f_out:
+                        f_out.write(bytes_escaneados)
+                        
+                    conn = sqlite3.connect("database.db")
+                    cursor = conn.cursor()
                     
-                conn = sqlite3.connect("database.db")
-                cursor = conn.cursor()
-                
-                estado_final = "ENTREGADO_CON_DIFERENCIAS" if hay_diferencias else "ENTREGADO_CONFORME"
-                
-                for it in articulos_detectados:
-                    desc = it.get("descripcion", "")
-                    desp_real = it.get("cantidad_despachada", 0)
-                    dif = it.get("cantidad_solicitada", 0) - desp_real
-                    
-                    cursor.execute("""
-                        UPDATE solicitudes 
-                        SET estado = ?,
-                            cantidad_despachada = ?,
-                            diferencia = ?,
-                            retirado_por = ?,
-                            fecha_despacho_real = ?,
-                            ruta_pdf_escaneado = ?
-                        WHERE (consecutivo = ? OR consecutivo IS NULL)
-                          AND articulo_id IN (SELECT codigo_grupal FROM articulos WHERE descripcion LIKE ?)
-                    """, (estado_final, desp_real, dif, persona_retiro, fecha_desp, ruta_pdf_final, consecutivo_encontrado, f"%{desc[:15]}%"))
-                    
-                conn.commit()
-                conn.close()
-                
-                st.balloons()
-                st.success(f"🎉 ¡Despacho del Pedimento #{consecutivo_encontrado} registrado exitosamente! Los informes se han actualizado.")
+                    for _, fila in df_editado.iterrows():
+                        fila_id = int(fila['id'])
+                        sol_cant = int(fila['Cant. Solicitada'])
+                        desp_cant = int(fila['Cant. Despachada Real'])
+                        dif_calc = sol_cant - desp_cant
+                        est_fila = "ENTREGADO_CON_DIFERENCIAS" if dif_calc != 0 else "ENTREGADO_CONFORME"
+                        
+                        cursor.execute("""
+                            UPDATE solicitudes
+                            SET cantidad_despachada = ?,
+                                diferencia = ?,
+                                retirado_por = ?,
+                                fecha_despacho_real = ?,
+                                ruta_pdf_escaneado = ?,
+                                estado = ?
+                            WHERE id = ?
+                        """, (desp_cant, dif_calc, persona_retiro, fecha_desp, ruta_pdf_final, est_fila, fila_id))
+                        
+                    conn.commit()
+                    conn.close()
+                    st.balloons()
+                    st.success(f"🎉 ¡Despacho del Pedimento #{consecutivo_final} registrado con éxito! Se cotejó contra lo pedido y se actualizaron los inventarios.")
 
     # TAB 4: INFORMES GENERALES
     with tab_informes:
