@@ -120,7 +120,6 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
-    # 1. Si el documento contiene texto digital
     if len(full_text.strip()) > 30:
         lines = full_text.split("\n")
         for line in lines:
@@ -138,7 +137,6 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
                     "cantidad_despachada": cant_desp
                 })
                 
-    # 2. Si no hubo texto digital (es escaneo de imagen), usar Gemini Vision si hay API Key
     if not articulos_encontrados:
         img_bytes = None
         for page in reader.pages:
@@ -527,7 +525,7 @@ else:
     tab_pedimentos = tabs[0]
 
 # -------------------------------------------------------------------
-# TAB 1: FORMULARIO DE PEDIMENTOS
+# TAB 1: FORMULARIO DE PEDIMENTOS (CON CANDADO DE VIDA ÚTIL)
 # -------------------------------------------------------------------
 with tab_pedimentos:
     col_u1, col_u2 = st.columns([4, 1])
@@ -556,7 +554,6 @@ with tab_pedimentos:
     cursor.execute("SELECT espacio_asignado FROM funcionarios WHERE id=?", (st.session_state['func_id'],))
     res_piso = cursor.fetchone()
     piso_asignado = res_piso[0] if res_piso else "Oficina General"
-    conn.close()
 
     colA, colB = st.columns([1, 2])
     
@@ -571,20 +568,75 @@ with tab_pedimentos:
         
         cantidad = st.number_input("Cantidad:", min_value=1, value=1, step=1)
         
-        if st.button("➕ Agregar al Pedimento"):
-            if len(st.session_state['carrito']) >= 10:
-                st.error("Límite máximo de 10 ítems por pedimento alcanzado.")
-            elif any(item['codigo'] == item_info['codigo_grupal'] for item in st.session_state['carrito']):
-                st.warning("Este artículo ya está en su lista actual.")
-            else:
-                st.session_state['carrito'].append({
-                    "codigo": item_info['codigo_grupal'],
-                    "descripcion": articulo_sel,
-                    "cantidad": cantidad,
-                    "frecuencia": item_info['frecuencia_entrega'],
-                    "dias_vida": item_info['dias_vida_util']
-                })
-                st.success("Artículo agregado al pedimento.")
+        # -------------------------------------------------------------
+        # CANDADO DE FRECUENCIA Y VIDA ÚTIL
+        # -------------------------------------------------------------
+        cursor.execute('''
+            SELECT COALESCE(fecha_despacho_real, fecha_aprobacion)
+            FROM solicitudes
+            WHERE funcionario_id = ? AND articulo_id = ? AND estado LIKE 'ENTREGADO%'
+            ORDER BY id DESC LIMIT 1
+        ''', (st.session_state['func_id'], item_info['codigo_grupal']))
+        last_req = cursor.fetchone()
+        
+        bloqueado = False
+        msg_bloqueo = ""
+        dias_faltantes = 0
+        
+        if last_req and last_req[0] and pd.notna(item_info['dias_vida_util']):
+            try:
+                fecha_str = str(last_req[0]).split()[0]
+                if "/" in fecha_str:
+                    last_date = datetime.strptime(fecha_str, "%d/%m/%Y").date()
+                else:
+                    last_date = datetime.strptime(fecha_str, "%Y-%m-%d").date()
+                    
+                dias_transcurridos = (datetime.now().date() - last_date).days
+                vida_util = int(item_info['dias_vida_util'])
+                
+                if dias_transcurridos < vida_util:
+                    bloqueado = True
+                    dias_faltantes = vida_util - dias_transcurridos
+                    msg_bloqueo = f"⛔ **Frecuencia de Entrega No Cumplida:**\nEste artículo se le despachó físicamente el **{last_date.strftime('%d/%m/%Y')}**.\nDebe esperar **{dias_faltantes} días** más para volver a solicitarlo (Vida útil reglamentaria: {vida_util} días)."
+            except Exception:
+                pass
+                
+        if bloqueado:
+            st.error(msg_bloqueo)
+            st.info("💡 Si ocurrió una emergencia (ej. derrame, daño, requerimiento extraordinario), justifíquelo a continuación para habilitar la solicitud excepcional:")
+            just_excepcion = st.text_input("Justificación de Excepción:", key="just_exc")
+            if just_excepcion.strip():
+                if st.button("⚠️ Solicitar por Excepción"):
+                    if len(st.session_state['carrito']) >= 10:
+                        st.error("Límite máximo de 10 ítems por pedimento alcanzado.")
+                    elif any(item['codigo'] == item_info['codigo_grupal'] for item in st.session_state['carrito']):
+                        st.warning("Este artículo ya está en su lista actual.")
+                    else:
+                        st.session_state['carrito'].append({
+                            "codigo": item_info['codigo_grupal'],
+                            "descripcion": f"{articulo_sel} [EXCEPCIÓN: {just_excepcion}]",
+                            "cantidad": cantidad,
+                            "frecuencia": item_info['frecuencia_entrega'],
+                            "dias_vida": item_info['dias_vida_util']
+                        })
+                        st.success("Artículo agregado al pedimento como excepción.")
+        else:
+            if st.button("➕ Agregar al Pedimento"):
+                if len(st.session_state['carrito']) >= 10:
+                    st.error("Límite máximo de 10 ítems por pedimento alcanzado.")
+                elif any(item['codigo'] == item_info['codigo_grupal'] for item in st.session_state['carrito']):
+                    st.warning("Este artículo ya está en su lista actual.")
+                else:
+                    st.session_state['carrito'].append({
+                        "codigo": item_info['codigo_grupal'],
+                        "descripcion": articulo_sel,
+                        "cantidad": cantidad,
+                        "frecuencia": item_info['frecuencia_entrega'],
+                        "dias_vida": item_info['dias_vida_util']
+                    })
+                    st.success("Artículo agregado al pedimento.")
+        
+    conn.close()
 
     with colB:
         st.subheader(f"🛒 Mi Pedimento Actual ({len(st.session_state['carrito'])}/10)")
@@ -596,7 +648,7 @@ with tab_pedimentos:
                 st.session_state['carrito'] = []
                 st.rerun()
             
-            justificacion_global = st.text_area("Justificación del pedido:")
+            justificacion_global = st.text_area("Justificación general del pedido (Opcional):")
             if st.button("🚀 Enviar Pedimento Completo a Jefatura", type="primary"):
                 conn = sqlite3.connect("database.db")
                 cursor = conn.cursor()
@@ -652,7 +704,6 @@ if st.session_state['rol'] == "ADMIN":
     with tab_firma:
         st.header("✍️ Validación de Pedimentos Firmados en Adobe Acrobat")
         
-        # PUNTO 1: DESCARGAR PENDIENTES
         st.subheader("1. Pedimentos Pendientes de Firma")
         st.write("Descargue el documento PDF que desea firmar en Adobe Acrobat:")
         
@@ -676,7 +727,6 @@ if st.session_state['rol'] == "ADMIN":
 
         st.markdown("---")
         
-        # PUNTO 2: TRÁMITE NORMAL (CON CORREO A BODEGA)
         st.subheader("2. Cargar Pedimento PDF Firmado (Trámite Normal - Con Envío a Bodega)")
         st.write("Para pedidos nuevos: cárguelo aquí para registrar la firma digital y **enviar el correo automático a Bodega**:")
         
@@ -726,7 +776,6 @@ if st.session_state['rol'] == "ADMIN":
 
         st.markdown("---")
         
-        # PUNTO 3: PEDIMENTOS ANTERIORES YA FIRMADOS
         st.subheader("3. Cargar Pedimento Ya Firmado (Histórico / Sin Envío a Bodega)")
         st.write("Suba un pedimento que **ya fue firmado y solicitado a bodega anteriormente**. El sistema lo registrará como aprobado **SIN enviar correos a bodega**, dejándolo listo para la Pestaña 3.")
         
@@ -756,32 +805,30 @@ if st.session_state['rol'] == "ADMIN":
             
             st.markdown("#### Artículos del Pedimento Firmado:")
             
-            # Si el PDF tenía texto digital o IA lo leyó:
             if articulos_leidos:
                 st.success(f"✅ Se leyeron {len(articulos_leidos)} artículo(s) automáticamente del PDF:")
                 df_art_view = pd.DataFrame(articulos_leidos)[['codigo', 'descripcion', 'cantidad_solicitada']]
                 st.dataframe(df_art_view, use_container_width=True)
                 lista_articulos_final = articulos_leidos
             else:
-                # Si es un escaneo plano sin capa de texto digital:
-                st.info("ℹ️ **Documento Escaneado Plano:** Como el archivo es una imagen escaneada sin texto digital, seleccione a continuación el o los artículos que contiene:")
+                st.info("ℹ️ **Documento Escaneado Plano sin texto extraíble:** Por favor seleccione a continuación los artículos que contiene el pedimento para registrarlos:")
                 
                 col_add1, col_add2, col_add3 = st.columns([3, 1, 1])
                 with col_add1:
                     art_esc_sel = st.selectbox("Insumo:", df_art_tab2['descripcion'].tolist(), key="sel_art_esc_tab2")
                 with col_add2:
-                    cant_esc_sel = st.number_input("Cantidad:", min_value=1, value=4, step=1, key="num_cant_esc_tab2")
+                    cant_esc_sel = st.number_input("Cantidad Solicitada:", min_value=1, value=1, step=1, key="num_cant_esc_tab2")
                 with col_add3:
                     st.write("")
                     st.write("")
-                    if st.button("➕ Agregar", key="btn_add_esc_tab2"):
+                    if st.button("➕ Agregar Artículo", key="btn_add_esc_tab2"):
                         cod_esc = df_art_tab2[df_art_tab2['descripcion'] == art_esc_sel].iloc[0]['codigo_grupal']
                         st.session_state['articulos_manuales_tab2'].append({
                             "codigo": cod_esc,
                             "descripcion": art_esc_sel,
                             "cantidad_solicitada": cant_esc_sel
                         })
-                        st.success("Artículo agregado.")
+                        st.success("Artículo agregado a la lista histórica.")
                         
                 if st.session_state['articulos_manuales_tab2']:
                     st.dataframe(pd.DataFrame(st.session_state['articulos_manuales_tab2'])[['codigo', 'descripcion', 'cantidad_solicitada']], use_container_width=True)
