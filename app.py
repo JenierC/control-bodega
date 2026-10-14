@@ -103,7 +103,7 @@ def verificar_base_datos():
 verificar_base_datos()
 
 # ===================================================================
-# FUNCIÓN DE EXTRACCIÓN AUTOMÁTICA DE PEDIMENTOS
+# FUNCIÓN DE EXTRACCIÓN MEJORADA: TEXTO DIGITAL Y VISIÓN AI
 # ===================================================================
 def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
@@ -120,23 +120,51 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
-    if len(full_text.strip()) > 30:
-        lines = full_text.split("\n")
-        for line in lines:
-            line = line.strip()
-            m = re.search(r'(\d{5,6})\s+(\d{2})\s+([A-ZÁÉÍÓÚÑ0-9\s\(\)\.\,\-]+?)\s+(\d+)(?:\s+(\d+))?$', line)
-            if m:
-                cod = m.group(1)
-                desc = m.group(3).strip()
-                cant_sol = int(m.group(4))
-                cant_desp = int(m.group(5)) if m.group(5) else cant_sol
-                articulos_encontrados.append({
-                    "codigo": cod,
-                    "descripcion": desc,
-                    "cantidad_solicitada": cant_sol,
-                    "cantidad_despachada": cant_desp
-                })
-                
+    # 1. BÚSQUEDA ROBUSTA EN EL TEXTO DIGITAL (Cruce contra catálogo de la base de datos)
+    if len(full_text.strip()) > 20:
+        try:
+            conn_cat = sqlite3.connect("database.db")
+            cursor_cat = conn_cat.cursor()
+            cursor_cat.execute("SELECT codigo_grupal, descripcion FROM articulos")
+            catalogo = cursor_cat.fetchall()
+            conn_cat.close()
+            
+            lines = [l.strip() for l in full_text.split("\n") if l.strip()]
+            
+            for cod, desc in catalogo:
+                desc_norm = desc.strip().upper()
+                # Si el insumo está presente en el documento
+                if len(desc_norm) > 5 and desc_norm in full_text.upper():
+                    cant_sol = 1
+                    cant_desp = 1
+                    for idx, line in enumerate(lines):
+                        if desc_norm[:18] in line.upper():
+                            # Buscar la cantidad en las siguientes 5 líneas generadas por Excel
+                            nums_next = []
+                            for nxt in lines[idx+1:idx+6]:
+                                if nxt.isdigit() and int(nxt) < 1000:
+                                    nums_next.append(int(nxt))
+                            
+                            if nums_next:
+                                cant_sol = nums_next[0]
+                                cant_desp = nums_next[1] if len(nums_next) > 1 else cant_sol
+                            else:
+                                nums_same = re.findall(r'\b\d+\b', line)
+                                if nums_same and nums_same[-1].isdigit():
+                                    cant_sol = int(nums_same[-1])
+                                    cant_desp = cant_sol
+                            break
+                            
+                    articulos_encontrados.append({
+                        "codigo": cod,
+                        "descripcion": desc,
+                        "cantidad_solicitada": cant_sol,
+                        "cantidad_despachada": cant_desp
+                    })
+        except Exception:
+            pass
+
+    # 2. SI NO HUBO TEXTO DIGITAL (Escaneo plano), RECURRIR A GEMINI VISION
     if not articulos_encontrados:
         img_bytes = None
         for page in reader.pages:
@@ -568,9 +596,6 @@ with tab_pedimentos:
         
         cantidad = st.number_input("Cantidad:", min_value=1, value=1, step=1)
         
-        # -------------------------------------------------------------
-        # CANDADO DE FRECUENCIA Y VIDA ÚTIL
-        # -------------------------------------------------------------
         cursor.execute('''
             SELECT COALESCE(fecha_despacho_real, fecha_aprobacion)
             FROM solicitudes
@@ -603,7 +628,7 @@ with tab_pedimentos:
                 
         if bloqueado:
             st.error(msg_bloqueo)
-            st.info("💡 Si ocurrió una emergencia (ej. derrame, daño, requerimiento extraordinario), justifíquelo a continuación para habilitar la solicitud excepcional:")
+            st.info("💡 Si ocurrió una emergencia (ej. derrame, daño, rotura), justifíquelo para habilitar la solicitud por excepción:")
             just_excepcion = st.text_input("Justificación de Excepción:", key="just_exc")
             if just_excepcion.strip():
                 if st.button("⚠️ Solicitar por Excepción"):
@@ -811,13 +836,13 @@ if st.session_state['rol'] == "ADMIN":
                 st.dataframe(df_art_view, use_container_width=True)
                 lista_articulos_final = articulos_leidos
             else:
-                st.info("ℹ️ **Documento Escaneado Plano sin texto extraíble:** Por favor seleccione a continuación los artículos que contiene el pedimento para registrarlos:")
+                st.info("ℹ️ **Documento Escaneado Plano:** Si es una imagen escaneada sin texto seleccionable, elija los artículos a continuación:")
                 
                 col_add1, col_add2, col_add3 = st.columns([3, 1, 1])
                 with col_add1:
                     art_esc_sel = st.selectbox("Insumo:", df_art_tab2['descripcion'].tolist(), key="sel_art_esc_tab2")
                 with col_add2:
-                    cant_esc_sel = st.number_input("Cantidad Solicitada:", min_value=1, value=1, step=1, key="num_cant_esc_tab2")
+                    cant_esc_sel = st.number_input("Cantidad Solicitada:", min_value=1, value=4, step=1, key="num_cant_esc_tab2")
                 with col_add3:
                     st.write("")
                     st.write("")
