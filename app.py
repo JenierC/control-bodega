@@ -58,7 +58,6 @@ def verificar_base_datos():
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     
-    # 1. Automigración de tabla solicitudes
     cursor.execute("PRAGMA table_info(solicitudes)")
     cols_sol = [row[1] for row in cursor.fetchall()]
     nuevas_cols_sol = {
@@ -76,7 +75,6 @@ def verificar_base_datos():
             except Exception:
                 pass
 
-    # 2. Automigración de tabla funcionarios
     cursor.execute("PRAGMA table_info(funcionarios)")
     cols_func = [row[1] for row in cursor.fetchall()]
     if 'debe_cambiar_password' not in cols_func:
@@ -90,7 +88,6 @@ def verificar_base_datos():
         except Exception:
             pass
 
-    # 3. Sembrar automáticamente los 12 usuarios oficiales
     hash_temp = hashlib.sha256(CLAVE_TEMPORAL_DEFAULT.encode()).hexdigest()
     for u in LISTA_USUARIOS_OFICIALES:
         cursor.execute("SELECT id FROM funcionarios WHERE username=?", (u["username"],))
@@ -106,7 +103,7 @@ def verificar_base_datos():
 verificar_base_datos()
 
 # ===================================================================
-# FUNCIÓN DE EXTRACCIÓN AUTOMÁTICA DE PEDIMENTOS (DIGITAL O ESCANEO)
+# FUNCIÓN DE EXTRACCIÓN AUTOMÁTICA DE PEDIMENTOS
 # ===================================================================
 def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
@@ -119,11 +116,11 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     match_cons = re.search(r'Consecutivo:\s*([0-9]{3}-[0-9]{4})', full_text, re.IGNORECASE)
     if not match_cons:
         match_cons = re.search(r'([0-9]{3}-[0-9]{4})', filename)
-    consecutivo = match_cons.group(1) if match_cons else "053-2026"
+    consecutivo = match_cons.group(1) if match_cons else "051-2026"
     
     articulos_encontrados = []
     
-    # 1. Extracción de tabla si el documento contiene texto digital
+    # 1. Si el documento contiene texto digital
     if len(full_text.strip()) > 30:
         lines = full_text.split("\n")
         for line in lines:
@@ -141,7 +138,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
                     "cantidad_despachada": cant_desp
                 })
                 
-    # 2. Extracción mediante Visión AI si es un escaneo de imagen
+    # 2. Si no hubo texto digital (es escaneo de imagen), usar Gemini Vision si hay API Key
     if not articulos_encontrados:
         img_bytes = None
         for page in reader.pages:
@@ -157,10 +154,10 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
                 prompt = """
                 Analiza este pedimento oficial de DINADECO. Extrae en JSON estricto:
                 {
-                  "consecutivo": "ej: 053-2026",
+                  "consecutivo": "ej: 051-2026",
                   "articulos": [
                     {
-                      "codigo": "Código numérico",
+                      "codigo": "Código numérico si aparece",
                       "descripcion": "Nombre del insumo",
                       "cantidad_solicitada": 4,
                       "cantidad_despachada": 4
@@ -211,6 +208,8 @@ if 'last_activity' not in st.session_state:
     st.session_state['last_activity'] = None
 if 'debe_cambiar_password' not in st.session_state:
     st.session_state['debe_cambiar_password'] = False
+if 'articulos_manuales_tab2' not in st.session_state:
+    st.session_state['articulos_manuales_tab2'] = []
 
 now = time.time()
 
@@ -222,6 +221,7 @@ def logout_inactividad():
     st.session_state['ultimo_pedimento'] = None
     st.session_state['last_activity'] = None
     st.session_state['debe_cambiar_password'] = False
+    st.session_state['articulos_manuales_tab2'] = []
     st.query_params.clear()
 
 def obtener_timestamp_query():
@@ -726,12 +726,13 @@ if st.session_state['rol'] == "ADMIN":
 
         st.markdown("---")
         
-        # PUNTO 3: PEDIMENTOS ANTERIORES YA FIRMADOS (AUTO-LECTURA SIN CORREO)
+        # PUNTO 3: PEDIMENTOS ANTERIORES YA FIRMADOS
         st.subheader("3. Cargar Pedimento Ya Firmado (Histórico / Sin Envío a Bodega)")
-        st.write("Suba un pedimento que **ya fue firmado y solicitado a bodega anteriormente**. El sistema **leerá automáticamente los artículos pedidos** y los registrará **SIN enviar correos a bodega**, dejándolo listo para la Pestaña 3.")
+        st.write("Suba un pedimento que **ya fue firmado y solicitado a bodega anteriormente**. El sistema lo registrará como aprobado **SIN enviar correos a bodega**, dejándolo listo para la Pestaña 3.")
         
         conn = sqlite3.connect("database.db")
         df_func_tab2 = pd.read_sql_query("SELECT id, nombre, puesto FROM funcionarios WHERE estado='ACTIVO' ORDER BY nombre ASC", conn)
+        df_art_tab2 = pd.read_sql_query("SELECT codigo_grupal, descripcion FROM articulos ORDER BY descripcion ASC", conn)
         conn.close()
         
         pdf_historico_firmado = st.file_uploader("📂 Subir PDF ya firmado por Jefatura:", type=["pdf"], key="uploader_hist_firmado")
@@ -739,10 +740,8 @@ if st.session_state['rol'] == "ADMIN":
         if pdf_historico_firmado is not None:
             bytes_hist_firmado = pdf_historico_firmado.read()
             
-            with st.spinner("🔍 Leyendo PDF firmado y extrayendo artículos pedidos..."):
+            with st.spinner("🔍 Analizando documento PDF..."):
                 consecutivo_leido, articulos_leidos = extraer_datos_pedimento_pdf(bytes_hist_firmado, pdf_historico_firmado.name)
-            
-            st.success(f"✅ **Pedimento Detectado:** #{consecutivo_leido} ({len(articulos_leidos)} artículo(s) identificado(s))")
             
             col_h1, col_h2 = st.columns(2)
             with col_h1:
@@ -755,12 +754,42 @@ if st.session_state['rol'] == "ADMIN":
             with col_h2:
                 consecutivo_hist_final = st.text_input("Número de Consecutivo:", value=consecutivo_leido, key="txt_consecutivo_hist_tab2")
             
-            st.markdown("#### Artículos leídos del pedimento firmado:")
+            st.markdown("#### Artículos del Pedimento Firmado:")
+            
+            # Si el PDF tenía texto digital o IA lo leyó:
             if articulos_leidos:
+                st.success(f"✅ Se leyeron {len(articulos_leidos)} artículo(s) automáticamente del PDF:")
                 df_art_view = pd.DataFrame(articulos_leidos)[['codigo', 'descripcion', 'cantidad_solicitada']]
                 st.dataframe(df_art_view, use_container_width=True)
+                lista_articulos_final = articulos_leidos
             else:
-                st.warning("No se pudieron leer artículos del PDF. Puede confirmarlo para registrar el pedimento.")
+                # Si es un escaneo plano sin capa de texto digital:
+                st.info("ℹ️ **Documento Escaneado Plano:** Como el archivo es una imagen escaneada sin texto digital, seleccione a continuación el o los artículos que contiene:")
+                
+                col_add1, col_add2, col_add3 = st.columns([3, 1, 1])
+                with col_add1:
+                    art_esc_sel = st.selectbox("Insumo:", df_art_tab2['descripcion'].tolist(), key="sel_art_esc_tab2")
+                with col_add2:
+                    cant_esc_sel = st.number_input("Cantidad:", min_value=1, value=4, step=1, key="num_cant_esc_tab2")
+                with col_add3:
+                    st.write("")
+                    st.write("")
+                    if st.button("➕ Agregar", key="btn_add_esc_tab2"):
+                        cod_esc = df_art_tab2[df_art_tab2['descripcion'] == art_esc_sel].iloc[0]['codigo_grupal']
+                        st.session_state['articulos_manuales_tab2'].append({
+                            "codigo": cod_esc,
+                            "descripcion": art_esc_sel,
+                            "cantidad_solicitada": cant_esc_sel
+                        })
+                        st.success("Artículo agregado.")
+                        
+                if st.session_state['articulos_manuales_tab2']:
+                    st.dataframe(pd.DataFrame(st.session_state['articulos_manuales_tab2'])[['codigo', 'descripcion', 'cantidad_solicitada']], use_container_width=True)
+                    if st.button("🗑️ Limpiar Artículos", key="btn_clear_esc_tab2"):
+                        st.session_state['articulos_manuales_tab2'] = []
+                        st.rerun()
+                
+                lista_articulos_final = st.session_state['articulos_manuales_tab2']
                 
             os.makedirs("pedimentos_generados", exist_ok=True)
             ruta_guardado_hist = os.path.join("pedimentos_generados", f"Pedimento_{consecutivo_hist_final}.pdf")
@@ -768,32 +797,35 @@ if st.session_state['rol'] == "ADMIN":
                 f_h.write(bytes_hist_firmado)
                 
             if st.button(f"💾 Registrar Pedimento #{consecutivo_hist_final} como Aprobado (Sin Enviar Correos)", type="primary", key="btn_save_hist_tab2"):
-                conn = sqlite3.connect("database.db")
-                cursor = conn.cursor()
-                
-                # Borrar filas de prueba previas con este consecutivo para evitar duplicados
-                cursor.execute("DELETE FROM solicitudes WHERE consecutivo = ?", (consecutivo_hist_final,))
-                
-                for a_item in articulos_leidos:
-                    cod_a = a_item.get("codigo", "")
-                    desc_a = a_item.get("descripcion", "")
-                    cant_a = int(a_item.get("cantidad_solicitada", 1))
+                if not lista_articulos_final:
+                    st.error("Por favor agregue al menos un artículo a la lista antes de guardar.")
+                else:
+                    conn = sqlite3.connect("database.db")
+                    cursor = conn.cursor()
                     
-                    cursor.execute("SELECT codigo_grupal FROM articulos WHERE codigo_grupal = ? OR descripcion LIKE ?", (cod_a, f"%{desc_a[:15]}%"))
-                    row_c = cursor.fetchone()
-                    cod_final = row_c[0] if row_c else cod_a
+                    cursor.execute("DELETE FROM solicitudes WHERE consecutivo = ?", (consecutivo_hist_final,))
                     
-                    cursor.execute("""
-                        INSERT INTO solicitudes (
-                            funcionario_id, articulo_id, cantidad, es_valido,
-                            justificacion, estado, consecutivo, firmado_por, fecha_aprobacion
-                        ) VALUES (?, ?, ?, 1, 'Pedimento Histórico Registrado en Pestaña 2', 'APROBADO_FIRMA_DIGITAL', ?, 'Firma Digital BCCR (Histórico)', CURRENT_TIMESTAMP)
-                    """, (func_hist_solicitante_id, cod_final, cant_a, consecutivo_hist_final))
-                    
-                conn.commit()
-                conn.close()
-                st.balloons()
-                st.success(f"🎉 ¡Pedimento #{consecutivo_hist_final} registrado como APROBADO sin enviar correos! Ahora diríjase a la **Pestaña 3 (Despacho/Recepción)** para cotejar lo entregado físicamente.")
+                    for a_item in lista_articulos_final:
+                        cod_a = a_item.get("codigo", "")
+                        desc_a = a_item.get("descripcion", "")
+                        cant_a = int(a_item.get("cantidad_solicitada", 1))
+                        
+                        cursor.execute("SELECT codigo_grupal FROM articulos WHERE codigo_grupal = ? OR descripcion LIKE ?", (cod_a, f"%{desc_a[:15]}%"))
+                        row_c = cursor.fetchone()
+                        cod_final = row_c[0] if row_c else cod_a
+                        
+                        cursor.execute("""
+                            INSERT INTO solicitudes (
+                                funcionario_id, articulo_id, cantidad, es_valido,
+                                justificacion, estado, consecutivo, firmado_por, fecha_aprobacion
+                            ) VALUES (?, ?, ?, 1, 'Pedimento Histórico Registrado en Pestaña 2', 'APROBADO_FIRMA_DIGITAL', ?, 'Firma Digital BCCR (Histórico)', CURRENT_TIMESTAMP)
+                        """, (func_hist_solicitante_id, cod_final, cant_a, consecutivo_hist_final))
+                        
+                    conn.commit()
+                    conn.close()
+                    st.session_state['articulos_manuales_tab2'] = []
+                    st.balloons()
+                    st.success(f"🎉 ¡Pedimento #{consecutivo_hist_final} registrado como APROBADO sin enviar correos! Ahora diríjase a la **Pestaña 3** para cotejar lo entregado físicamente.")
 
     # ===============================================================
     # TAB 3: RECEPCIÓN Y DESPACHO FÍSICO DE BODEGA
@@ -811,7 +843,6 @@ if st.session_state['rol'] == "ADMIN":
             
             st.success(f"✅ **Documento Detectado:** Pedimento #{consecutivo_detectado}")
             
-            # Consultar EXCLUSIVAMENTE los artículos registrados para este pedimento
             conn = sqlite3.connect("database.db")
             df_solicitud_exacta = pd.read_sql_query("""
                 SELECT s.id, a.codigo_grupal, a.descripcion, s.cantidad AS cantidad_solicitada,
