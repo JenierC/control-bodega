@@ -41,6 +41,25 @@ LISTA_USUARIOS_OFICIALES = [
 ]
 
 # ==========================================
+# DETECTOR UNIVERSAL DE CLAVE GEMINI
+# ==========================================
+def obtener_gemini_api_key():
+    if "gemini_api_key" in st.secrets:
+        return str(st.secrets["gemini_api_key"]).strip()
+    if "GEMINI_API_KEY" in st.secrets:
+        return str(st.secrets["GEMINI_API_KEY"]).strip()
+    for sec in st.secrets:
+        try:
+            val = st.secrets[sec]
+            if isinstance(val, dict) or hasattr(val, "get"):
+                for k in ["gemini_api_key", "GEMINI_API_KEY", "api_key", "key"]:
+                    if k in val:
+                        return str(val[k]).strip()
+        except Exception:
+            pass
+    return os.environ.get("GEMINI_API_KEY", None)
+
+# ==========================================
 # VERIFICACIÓN AUTOMÁTICA Y MIGRACIÓN BD
 # ==========================================
 def verificar_base_datos():
@@ -120,7 +139,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
-    # 1. MÉTODO EXACTO POR LÍNEAS DE TABLA: Partida, Subpartida, Código, Subcódigo, Cantidad
+    # 1. Búsqueda exacta por tabla en texto digital (Partida + Subpartida + Código + Subcódigo + Cantidad)
     pattern_bys = re.compile(r'(\d{5})\s+(\d{4,5})\s+(\d{5,6})\s+(\d{2})\s+(\d+)')
     matches_bys = pattern_bys.findall(full_text)
     
@@ -129,7 +148,6 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
             conn_cat = sqlite3.connect("database.db")
             c = conn_cat.cursor()
             for partida, subpartida, codigo, subcodigo, cantidad in matches_bys:
-                # Búsqueda exacta por Partida + Código + Subcódigo (ej. 29905 y 00000101)
                 c.execute("""
                     SELECT codigo_grupal, descripcion 
                     FROM articulos 
@@ -155,7 +173,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
         except Exception:
             pass
 
-    # 2. MÉTODO VISIÓN IA SI ES ESCANEO PLANO
+    # 2. Visión IA si es escaneo plano
     if not articulos_encontrados:
         img_bytes = None
         for page in reader.pages:
@@ -163,13 +181,13 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
                 img_bytes = page.images[0].data
                 break
                 
-        api_key = st.secrets.get("gemini_api_key", None) if "gemini_api_key" in st.secrets else os.environ.get("GEMINI_API_KEY", None)
+        api_key = obtener_gemini_api_key()
         if api_key and img_bytes:
             try:
                 b64_img = base64.b64encode(img_bytes).decode("utf-8")
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
                 prompt = """
-                Analiza este pedimento oficial de DINADECO. Extrae en JSON estricto:
+                Analiza este pedimento oficial de DINADECO. Extrae en formato JSON estricto:
                 {
                   "consecutivo": "ej: 051-2026",
                   "articulos": [
@@ -187,7 +205,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
                     "contents": [{
                         "parts": [
                             {"text": prompt},
-                            {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}}
+                            {"inlineData": {"mimeType": "image/jpeg", "data": b64_img}}
                         ]
                     }]
                 }
@@ -933,7 +951,7 @@ if st.session_state['rol'] == "ADMIN":
             persona_retiro_detectada = "Pamela CA"
             ai_despachos = {}
             
-            api_key = st.secrets.get("gemini_api_key", None) if "gemini_api_key" in st.secrets else os.environ.get("GEMINI_API_KEY", None)
+            api_key = obtener_gemini_api_key()
             if api_key:
                 try:
                     reader_scan = pypdf.PdfReader(io.BytesIO(bytes_escaneados))
@@ -962,7 +980,7 @@ if st.session_state['rol'] == "ADMIN":
                         Devuelve ÚNICAMENTE el JSON.
                         """
                         payload_g = {
-                            "contents": [{"parts": [{"text": prompt_g}, {"inline_data": {"mime_type": "image/jpeg", "data": b64_scan}}]}]
+                            "contents": [{"parts": [{"text": prompt_g}, {"inlineData": {"mimeType": "image/jpeg", "data": b64_scan}}]}]
                         }
                         req_g = urllib.request.Request(url_g, data=json.dumps(payload_g).encode('utf-8'), headers={'Content-Type': 'application/json'})
                         with urllib.request.urlopen(req_g, timeout=15) as resp_g:
@@ -976,8 +994,8 @@ if st.session_state['rol'] == "ADMIN":
                                 persona_retiro_detectada = json_g["retirado_por"]
                             for item_d in json_g.get("despachos", []):
                                 ai_despachos[item_d.get("descripcion", "").upper()[:15]] = int(item_d.get("cantidad_despachada", 0))
-                except Exception:
-                    pass
+                except Exception as e_ai:
+                    st.caption(f"ℹ️ Nota de análisis visual: {e_ai}")
 
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
@@ -1032,7 +1050,7 @@ if st.session_state['rol'] == "ADMIN":
                 
                 hay_faltante = any((int(f['Cant. Solicitada']) - int(f['Cant. Despachada Real'])) != 0 for _, f in df_editado.iterrows())
                 if hay_faltante:
-                    st.warning("⚠️ **Alerta:** Hay artículos con cantidades entregadas menores a las solicitadas.")
+                    st.warning("⚠️ **Alerta de Faltante:** Bodega despachó cantidades menores a las solicitadas.")
                 else:
                     st.info("👍 Todos los artículos coinciden completos.")
                 
