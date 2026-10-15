@@ -1145,7 +1145,9 @@ if st.session_state['rol'] == "ADMIN":
                     st.balloons()
                     st.success(f"🎉 ¡Despacho del Pedimento #{consecutivo_final} registrado con éxito! Se cotejó contra lo pedido y se actualizaron los inventarios.")
 
+    # ===============================================================
     # TAB 4: INFORMES GENERALES (INTERACTIVO: CLIC PARA DESPLEGAR)
+    # ===============================================================
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico de Bodega")
         st.caption("Haga clic sobre cualquier pedimento para desplegar los insumos y detalles de entrega.")
@@ -1160,7 +1162,7 @@ if st.session_state['rol'] == "ADMIN":
                    SUM(COALESCE(s.diferencia, 0)) AS Total_Faltante,
                    MAX(COALESCE(s.fecha_despacho_real, s.fecha_aprobacion, 'Pendiente')) AS Fecha,
                    MAX(COALESCE(s.retirado_por, 'Pendiente')) AS Retirado_Por,
-                   MAX(s.ruta_pdf_escaneado) AS Ruta_Escaneado,
+                   MAX(COALESCE(s.ruta_pdf_escaneado, '')) AS Ruta_Escaneado,
                    CASE 
                        WHEN SUM(COALESCE(s.diferencia, 0)) > 0 THEN '⚠️ Con Faltantes'
                        WHEN MAX(s.estado) LIKE 'ENTREGADO%' THEN '✅ Entregado Conforme'
@@ -1219,8 +1221,9 @@ if st.session_state['rol'] == "ADMIN":
 
                     st.dataframe(df_detalles, hide_index=True, use_container_width=True)
 
-                    ruta_pdf = row['Ruta_Escaneado']
-                    if ruta_pdf and os.path.exists(ruta_pdf):
+                    raw_ruta = row['Ruta_Escaneado']
+                    ruta_pdf = str(raw_ruta).strip() if pd.notna(raw_ruta) else ""
+                    if ruta_pdf and ruta_pdf != "None" and os.path.exists(ruta_pdf):
                         with open(ruta_pdf, "rb") as f_pdf:
                             st.download_button(
                                 label=f"📥 Descargar PDF Escaneado devuelto por Bodega (#{ped_id})",
