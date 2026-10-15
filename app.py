@@ -120,7 +120,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
-    # 1. MÉTODO EXACTO POR LÍNEAS DE TABLA: Partida + Subpartida + Código + Subcódigo + Cantidad
+    # 1. MÉTODO EXACTO POR LÍNEAS DE TABLA: Partida, Subpartida, Código, Subcódigo, Cantidad
     pattern_bys = re.compile(r'(\d{5})\s+(\d{4,5})\s+(\d{5,6})\s+(\d{2})\s+(\d+)')
     matches_bys = pattern_bys.findall(full_text)
     
@@ -129,17 +129,19 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
             conn_cat = sqlite3.connect("database.db")
             c = conn_cat.cursor()
             for partida, subpartida, codigo, subcodigo, cantidad in matches_bys:
-                # Filtrar con precisión por Partida Y Código (evita que el 000001 de Limpieza coincida con Agenda)
+                # Búsqueda exacta por Partida + Código + Subcódigo (ej. 29905 y 00000101)
                 c.execute("""
                     SELECT codigo_grupal, descripcion 
                     FROM articulos 
                     WHERE codigo_grupal LIKE ? AND codigo_grupal LIKE ?
-                """, (f"{partida}%", f"%{codigo}%"))
+                """, (f"{partida}%", f"%{codigo}{subcodigo}"))
                 row = c.fetchone()
-                
-                # Respaldo en caso de formato alternativo
                 if not row:
-                    c.execute("SELECT codigo_grupal, descripcion FROM articulos WHERE codigo_grupal LIKE ?", (f"%{codigo}%",))
+                    c.execute("""
+                        SELECT codigo_grupal, descripcion 
+                        FROM articulos 
+                        WHERE codigo_grupal LIKE ? AND codigo_grupal LIKE ?
+                    """, (f"{partida}%", f"%{codigo}%"))
                     row = c.fetchone()
                     
                 if row:
@@ -153,7 +155,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
         except Exception:
             pass
 
-    # 2. MÉTODO VISIÓN IA SI ES ESCANEO DE IMAGEN PLANO
+    # 2. MÉTODO VISIÓN IA SI ES ESCANEO PLANO
     if not articulos_encontrados:
         img_bytes = None
         for page in reader.pages:
@@ -915,7 +917,6 @@ if st.session_state['rol'] == "ADMIN":
             
             st.success(f"✅ **Documento Detectado:** Pedimento #{consecutivo_detectado}")
             
-            # Consultar lo registrado para este consecutivo en la base de datos
             conn = sqlite3.connect("database.db")
             df_solicitud_exacta = pd.read_sql_query("""
                 SELECT s.id, a.codigo_grupal, a.descripcion, s.cantidad AS cantidad_solicitada,
@@ -928,9 +929,6 @@ if st.session_state['rol'] == "ADMIN":
             """, conn, params=(consecutivo_detectado,))
             conn.close()
             
-            # ---------------------------------------------------------
-            # INTENTAR LECTURA DE SELLOS Y NÚMEROS MANUSCRITOS CON GEMINI
-            # ---------------------------------------------------------
             fecha_sello_detectada = "13/10/2026"
             persona_retiro_detectada = "Pamela CA"
             ai_despachos = {}
@@ -1002,7 +1000,6 @@ if st.session_state['rol'] == "ADMIN":
                     c_sol = int(r['cantidad_solicitada'])
                     c_desp = int(r['cantidad_despachada'])
                     
-                    # Si la IA leyó la columna manuscrita, actualizar con la cantidad real
                     desc_check = r['descripcion'].upper()
                     for k_ai, v_ai in ai_despachos.items():
                         if k_ai in desc_check or desc_check[:15] in k_ai:
@@ -1033,7 +1030,6 @@ if st.session_state['rol'] == "ADMIN":
                     key="editor_cotejo_tab3"
                 )
                 
-                # Recalcular diferencias en caso de que el usuario haya editado en vivo
                 hay_faltante = any((int(f['Cant. Solicitada']) - int(f['Cant. Despachada Real'])) != 0 for _, f in df_editado.iterrows())
                 if hay_faltante:
                     st.warning("⚠️ **Alerta:** Hay artículos con cantidades entregadas menores a las solicitadas.")
