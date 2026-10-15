@@ -174,7 +174,6 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
-    # Búsqueda exacta en texto: Partida, Subpartida, Código, Subcódigo, Cantidad
     pattern_bys = re.compile(r'(\d{5})\s+(\d{4,5})\s+(\d{5,6})\s+(\d{2})\s+(\d+)')
     matches_bys = pattern_bys.findall(full_text)
     
@@ -612,7 +611,7 @@ with tab_pedimentos:
                 if dias_transcurridos < vida_util:
                     bloqueado = True
                     dias_faltantes = vida_util - dias_transcurridos
-                    msg_bloqueo = f"⛔ **Frecuencia de Entrega No Cumplida:**\\nEste artículo se le despachó físicamente el **{last_date.strftime('%d/%m/%Y')}**.\\nDebe esperar **{dias_faltantes} días** más para volver a solicitarlo (Vida útil reglamentaria: {vida_util} días)."
+                    msg_bloqueo = f"⛔ **Frecuencia de Entrega No Cumplida:**\nEste artículo se le despachó físicamente el **{last_date.strftime('%d/%m/%Y')}**.\nDebe esperar **{dias_faltantes} días** más para volver a solicitarlo (Vida útil reglamentaria: {vida_util} días)."
             except Exception:
                 pass
                 
@@ -1146,31 +1145,92 @@ if st.session_state['rol'] == "ADMIN":
                     st.balloons()
                     st.success(f"🎉 ¡Despacho del Pedimento #{consecutivo_final} registrado con éxito! Se cotejó contra lo pedido y se actualizaron los inventarios.")
 
-    # TAB 4: INFORMES GENERALES
+    # TAB 4: INFORMES GENERALES (INTERACTIVO: CLIC PARA DESPLEGAR)
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico de Bodega")
+        st.caption("Haga clic sobre cualquier pedimento para desplegar los insumos y detalles de entrega.")
+
         conn = sqlite3.connect("database.db")
         
-        df_entregas = pd.read_sql_query("""
+        df_pedimentos = pd.read_sql_query("""
             SELECT s.consecutivo AS Pedimento,
-                   f.nombre AS Funcionario, 
-                   f.espacio_asignado AS Ubicacion, 
-                   a.descripcion AS Articulo, 
-                   s.cantidad AS Solicitado, 
-                   COALESCE(s.cantidad_despachada, s.cantidad) AS Despachado_Real,
-                   COALESCE(s.diferencia, 0) AS Faltante,
-                   COALESCE(s.retirado_por, 'Pendiente') AS Retirado_Por,
-                   COALESCE(s.fecha_despacho_real, s.fecha_aprobacion) AS Fecha_Despacho,
-                   s.estado AS Estado,
-                   COALESCE(s.ruta_pdf_escaneado, 'Sin archivo') AS Archivo_Escaneado
-            FROM solicitudes s 
-            JOIN funcionarios f ON s.funcionario_id = f.id 
-            JOIN articulos a ON s.articulo_id = a.codigo_grupal
-            ORDER BY s.id DESC
+                   f.nombre AS Funcionario,
+                   f.espacio_asignado AS Ubicacion,
+                   COUNT(s.id) AS Total_Articulos,
+                   SUM(COALESCE(s.diferencia, 0)) AS Total_Faltante,
+                   MAX(COALESCE(s.fecha_despacho_real, s.fecha_aprobacion, 'Pendiente')) AS Fecha,
+                   MAX(COALESCE(s.retirado_por, 'Pendiente')) AS Retirado_Por,
+                   MAX(s.ruta_pdf_escaneado) AS Ruta_Escaneado,
+                   CASE 
+                       WHEN SUM(COALESCE(s.diferencia, 0)) > 0 THEN '⚠️ Con Faltantes'
+                       WHEN MAX(s.estado) LIKE 'ENTREGADO%' THEN '✅ Entregado Conforme'
+                       WHEN MAX(s.estado) = 'APROBADO_FIRMA_DIGITAL' THEN '✍️ Aprobado (En Bodega)'
+                       ELSE '⏳ En Trámite'
+                   END AS Estado_General
+            FROM solicitudes s
+            JOIN funcionarios f ON s.funcionario_id = f.id
+            WHERE s.consecutivo IS NOT NULL AND s.consecutivo != ''
+            GROUP BY s.consecutivo, f.nombre, f.espacio_asignado
+            ORDER BY s.consecutivo DESC
         """, conn)
+
+        if df_pedimentos.empty:
+            st.info("No hay pedimentos registrados en el sistema todavía.")
+        else:
+            busqueda = st.text_input("🔍 Buscar pedimento o funcionario:", placeholder="Ej: 051-2026 o Ana Orozco", key="search_inf")
+            st.write("")
+            
+            for _, row in df_pedimentos.iterrows():
+                ped_id = row['Pedimento']
+                solicitante = row['Funcionario']
+                
+                if busqueda.strip():
+                    term = busqueda.strip().upper()
+                    if term not in str(ped_id).upper() and term not in str(solicitante).upper():
+                        continue
+
+                icono = "⚠️" if row['Total_Faltante'] > 0 else "📦"
+                titulo_linea = f"{icono} Pedimento #{ped_id} — {solicitante}"
+                
+                with st.expander(titulo_linea, expanded=False):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.markdown(f"**Ubicación:**\n{row['Ubicacion']}")
+                    c2.markdown(f"**Fecha:**\n{row['Fecha']}")
+                    c3.markdown(f"**Retirado por:**\n{row['Retirado_Por']}")
+                    c4.markdown(f"**Estado:**\n{row['Estado_General']}")
+                    
+                    st.markdown("---")
+                    st.write("**📋 Insumos Solicitados y Estado de Entrega:**")
+                    
+                    df_detalles = pd.read_sql_query("""
+                        SELECT a.descripcion AS [Artículo],
+                               s.cantidad AS [Cant. Solicitada],
+                               COALESCE(s.cantidad_despachada, s.cantidad) AS [Cant. Despachada Real],
+                               COALESCE(s.diferencia, 0) AS [Faltante],
+                               CASE 
+                                   WHEN COALESCE(s.diferencia, 0) > 0 THEN '⚠️ Incompleto'
+                                   ELSE '✅ Completo'
+                               END AS [Estado]
+                        FROM solicitudes s
+                        JOIN articulos a ON s.articulo_id = a.codigo_grupal
+                        WHERE s.consecutivo = ?
+                        ORDER BY s.id ASC
+                    """, conn, params=(ped_id,))
+
+                    st.dataframe(df_detalles, hide_index=True, use_container_width=True)
+
+                    ruta_pdf = row['Ruta_Escaneado']
+                    if ruta_pdf and os.path.exists(ruta_pdf):
+                        with open(ruta_pdf, "rb") as f_pdf:
+                            st.download_button(
+                                label=f"📥 Descargar PDF Escaneado devuelto por Bodega (#{ped_id})",
+                                data=f_pdf.read(),
+                                file_name=os.path.basename(ruta_pdf),
+                                mime="application/pdf",
+                                key=f"dl_pdf_{ped_id}"
+                            )
+
         conn.close()
-        
-        st.dataframe(df_entregas, use_container_width=True)
 
     # TAB 5: APROBACIÓN DE USUARIOS
     with tab_usuarios:
