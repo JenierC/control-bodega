@@ -533,10 +533,11 @@ if st.session_state['rol'] == "ADMIN":
         "✍️ 2. Firma/Aprobación PDF", 
         "📦 3. Despacho/Recepción Bodega", 
         "📊 4. Informes", 
-        "✅ 5. Aprobar Usuarios", 
-        "⚙️ 6. Control Master"
+        "⏱️ 5. Ciclos de Entrega y Vida Útil",
+        "✅ 6. Aprobar Usuarios", 
+        "⚙️ 7. Control Master"
     ])
-    tab_pedimentos, tab_firma, tab_recepcion, tab_informes, tab_usuarios, tab_master = tabs
+    tab_pedimentos, tab_firma, tab_recepcion, tab_informes, tab_frecuencias, tab_usuarios, tab_master = tabs
 else:
     tabs = st.tabs(["📝 1. Mis Pedimentos (Hasta 10 ítems)"])
     tab_pedimentos = tabs[0]
@@ -958,7 +959,6 @@ if st.session_state['rol'] == "ADMIN":
             persona_retiro_detectada = "Pamela CA"
             ai_despachos = {}
             
-            # Regla de extracción específica para el pedimento verificado 051-2026
             if consecutivo_detectado == "051-2026":
                 ai_despachos = {
                     "AROMATIZANTE": 3,
@@ -1235,7 +1235,152 @@ if st.session_state['rol'] == "ADMIN":
 
         conn.close()
 
-    # TAB 5: APROBACIÓN DE USUARIOS
+    # ===============================================================
+    # TAB 5: REGLAS DE FRECUENCIA Y VIDA ÚTIL DE INSUMOS
+    # ===============================================================
+    with tab_frecuencias:
+        st.header("⏱️ Control de Periodicidad y Ciclos de Entrega de Insumos")
+        st.write("Configure cada cuántos días o con qué periodicidad máxima un funcionario puede volver a pedir cada artículo. Estas reglas son las que activan el **candado de seguridad** en la Pestaña 1.")
+
+        conn = sqlite3.connect("database.db")
+        df_arts_cfg = pd.read_sql_query("""
+            SELECT codigo_grupal, descripcion, categoria, 
+                   COALESCE(frecuencia_entrega, 'Mensual') AS frecuencia_entrega,
+                   COALESCE(dias_vida_util, 30) AS dias_vida_util
+            FROM articulos
+            ORDER BY categoria ASC, descripcion ASC
+        """, conn)
+
+        m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+        m_c1.metric("Total Artículos en Catálogo", len(df_arts_cfg))
+        m_c2.metric("Categorías Registradas", df_arts_cfg["categoria"].nunique())
+        prom_dias = int(df_arts_cfg["dias_vida_util"].mean()) if not df_arts_cfg.empty else 0
+        m_c3.metric("Promedio de Vida Útil", f"{prom_dias} días")
+        quincenales = len(df_arts_cfg[df_arts_cfg["frecuencia_entrega"].str.contains("Quincenal", case=False, na=False)])
+        m_c4.metric("Artículos Quincenales", quincenales)
+
+        st.markdown("---")
+
+        tipo_edicion = st.radio(
+            "Seleccione el modo de edición:",
+            ["📋 Edición Rápida Masiva (Tabla Interactiva)", "✏️ Edición Individual por Artículo"],
+            horizontal=True,
+            key="modo_edicion_frec"
+        )
+
+        if tipo_edicion == "📋 Edición Rápida Masiva (Tabla Interactiva)":
+            st.subheader("Tabla de Frecuencias y Días de Vida Útil")
+            col_filtro1, col_filtro2 = st.columns([1, 2])
+            with col_filtro1:
+                todas_cats = ["Todas"] + sorted([c for c in df_arts_cfg["categoria"].dropna().unique() if str(c).strip()])
+                cat_filtro = st.selectbox("Filtrar por Categoría:", todas_cats, key="frec_cat_filtro")
+            with col_filtro2:
+                busqueda_art = st.text_input("🔍 Buscar artículo por nombre o código:", key="frec_busqueda_art")
+
+            df_para_editar = df_arts_cfg.copy()
+            if cat_filtro != "Todas":
+                df_para_editar = df_para_editar[df_para_editar["categoria"] == cat_filtro]
+            if busqueda_art.strip():
+                b_term = busqueda_art.strip().upper()
+                df_para_editar = df_para_editar[
+                    df_para_editar["descripcion"].str.upper().str.contains(b_term) |
+                    df_para_editar["codigo_grupal"].str.contains(b_term)
+                ]
+
+            st.caption("💡 Modifique directamente la columna **Frecuencia de Entrega** o los **Días de Vida Útil**. Al terminar, presione el botón de guardar:")
+
+            df_editado_frec = st.data_editor(
+                df_para_editar,
+                column_config={
+                    "codigo_grupal": st.column_config.TextColumn("Código", disabled=True, width="medium"),
+                    "descripcion": st.column_config.TextColumn("Descripción del Artículo", disabled=True, width="large"),
+                    "categoria": st.column_config.TextColumn("Categoría", disabled=True, width="medium"),
+                    "frecuencia_entrega": st.column_config.SelectboxColumn(
+                        "Frecuencia de Entrega",
+                        options=[
+                            "Inmediata (A Demanda)",
+                            "Semanal",
+                            "Quincenal",
+                            "Mensual",
+                            "Bimestral",
+                            "Trimestral",
+                            "Semestral",
+                            "Anual"
+                        ],
+                        required=True,
+                        width="medium"
+                    ),
+                    "dias_vida_util": st.column_config.NumberColumn(
+                        "Días de Vida Útil (Candado)",
+                        min_value=0,
+                        max_value=1000,
+                        step=1,
+                        required=True,
+                        width="small",
+                        help="Número de días obligatorios que deben pasar para que el funcionario pueda volver a pedir este insumo."
+                    )
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="editor_frecuencias_tab5"
+            )
+
+            if st.button("💾 Guardar Cambios de Frecuencias en Inventario", type="primary", use_container_width=True, key="btn_guardar_frecuencias"):
+                cursor = conn.cursor()
+                for _, fila in df_editado_frec.iterrows():
+                    cursor.execute("""
+                        UPDATE articulos 
+                        SET frecuencia_entrega = ?, dias_vida_util = ? 
+                        WHERE codigo_grupal = ?
+                    """, (fila['frecuencia_entrega'], int(fila['dias_vida_util']), fila['codigo_grupal']))
+                conn.commit()
+                st.balloons()
+                st.success("🎉 ¡Reglas de periodicidad y vida útil actualizadas con éxito! El candado de seguridad en la Pestaña 1 aplicará de inmediato estos nuevos plazos.")
+                time.sleep(1)
+                st.rerun()
+
+        else:
+            st.subheader("Editar Reglas de un Artículo Específico")
+            art_lista = df_arts_cfg["descripcion"].tolist()
+            art_sel_ind = st.selectbox("Seleccione el Insumo a modificar:", art_lista, key="sel_art_ind_frec")
+            item_ind_data = df_arts_cfg[df_arts_cfg["descripcion"] == art_sel_ind].iloc[0]
+
+            with st.form("form_edit_art_individual"):
+                st.write(f"Código Grupal: **{item_ind_data['codigo_grupal']}**")
+                st.write(f"Categoría: **{item_ind_data['categoria']}**")
+
+                frec_opciones = [
+                    "Inmediata (A Demanda)",
+                    "Semanal",
+                    "Quincenal",
+                    "Mensual",
+                    "Bimestral",
+                    "Trimestral",
+                    "Semestral",
+                    "Anual"
+                ]
+                frec_actual = item_ind_data['frecuencia_entrega']
+                idx_frec = frec_opciones.index(frec_actual) if frec_actual in frec_opciones else 3
+
+                nueva_frec = st.selectbox("Frecuencia Oficial de Entrega:", frec_opciones, index=idx_frec, key="frec_ind_val")
+                nuevos_dias = st.number_input("Días de Vida Útil Reglamentaria (Días para desbloquear siguiente pedido):", min_value=0, max_value=1000, value=int(item_ind_data['dias_vida_util']), step=1, key="dias_ind_val")
+
+                col_b1, col_b2 = st.columns([1, 3])
+                if col_b1.form_submit_button("💾 Actualizar Insumo", type="primary"):
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE articulos 
+                        SET frecuencia_entrega = ?, dias_vida_util = ? 
+                        WHERE codigo_grupal = ?
+                    """, (nueva_frec, int(nuevos_dias), item_ind_data['codigo_grupal']))
+                    conn.commit()
+                    st.success(f"✅ ¡Artículo '{art_sel_ind}' actualizado: Frecuencia '{nueva_frec}' ({nuevos_dias} días)!")
+                    time.sleep(1)
+                    st.rerun()
+
+        conn.close()
+
+    # TAB 6: APROBACIÓN DE USUARIOS
     with tab_usuarios:
         st.header("✅ Aprobación de Cuentas de Usuarios")
         st.write("Gestione las solicitudes de acceso al sistema.")
@@ -1270,7 +1415,7 @@ if st.session_state['rol'] == "ADMIN":
         if not df_inactivos.empty:
             conn.close()
 
-    # TAB 6: CONTROL MASTER, USUARIOS Y REINICIO
+    # TAB 7: CONTROL MASTER, USUARIOS Y REINICIO
     with tab_master:
         st.header("⚙️ Control Master del Sistema")
         st.write("Herramientas exclusivas para el usuario Administrador Master.")
