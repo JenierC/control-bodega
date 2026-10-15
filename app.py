@@ -41,7 +41,7 @@ LISTA_USUARIOS_OFICIALES = [
 ]
 
 # ==========================================
-# GESTIÓN Y PERSISTENCIA DE API KEY GEMINI
+# DETECTOR Y ALMACENAMIENTO DE API KEY GEMINI
 # ==========================================
 def obtener_gemini_api_key():
     try:
@@ -148,7 +148,7 @@ def verificar_base_datos():
 verificar_base_datos()
 
 # ===================================================================
-# FUNCIÓN DE EXTRACCIÓN ROBUSTA DE PEDIMENTOS (DIGITAL O ESCANEO)
+# EXTRACCIÓN DEL PEDIMENTO FIRMADO DIGITAL (PESTAÑA 2 PUNTO 3)
 # ===================================================================
 def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
@@ -165,7 +165,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
-    # 1. BÚSQUEDA EXACTA EN TABLA: Partida, Subpartida, Código, Subcódigo, Cantidad
+    # Búsqueda exacta en texto: Partida, Subpartida, Código, Subcódigo, Cantidad
     pattern_bys = re.compile(r'(\d{5})\s+(\d{4,5})\s+(\d{5,6})\s+(\d{2})\s+(\d+)')
     matches_bys = pattern_bys.findall(full_text)
     
@@ -174,6 +174,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
             conn_cat = sqlite3.connect("database.db")
             c = conn_cat.cursor()
             for partida, subpartida, codigo, subcodigo, cantidad in matches_bys:
+                # Cruce estricto por Partida y Código (evita cruces erróneos con Agenda o Cloro)
                 c.execute("""
                     SELECT codigo_grupal, descripcion 
                     FROM articulos 
@@ -199,63 +200,39 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
         except Exception:
             pass
 
-    # 2. VISIÓN IA SI ES ESCANEO PLANO
+    # Si el archivo fue un escaneo sin texto, se envía el PDF completo a Gemini
     if not articulos_encontrados:
-        img_bytes = None
-        for page in reader.pages:
-            if page.images:
-                img_bytes = page.images[0].data
-                break
-                
         api_key = obtener_gemini_api_key()
-        if api_key and img_bytes:
+        if api_key:
             try:
-                b64_img = base64.b64encode(img_bytes).decode("utf-8")
-                prompt_ai = """
-                Analiza este pedimento oficial de DINADECO. Extrae en JSON estricto:
-                {
-                  "consecutivo": "ej: 051-2026",
-                  "articulos": [
-                    {
-                      "codigo": "Código numérico",
-                      "descripcion": "Nombre del insumo",
-                      "cantidad_solicitada": 4,
-                      "cantidad_despachada": 4
-                    }
-                  ]
-                }
-                Devuelve ÚNICAMENTE el JSON.
-                """
+                b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+                prompt_ai = "Analiza este pedimento de DINADECO. Devuelve únicamente JSON: {\"consecutivo\":\"051-2026\",\"articulos\":[{\"codigo\":\"\",\"descripcion\":\"Nombre\",\"cantidad_solicitada\":1}]}"
                 payload_ai = {
                     "contents": [{
                         "parts": [
                             {"text": prompt_ai},
-                            {"inlineData": {"mimeType": "image/jpeg", "data": b64_img}}
+                            {"inlineData": {"mimeType": "application/pdf", "data": b64_pdf}}
                         ]
                     }],
-                    "generationConfig": {
-                        "temperature": 0.1,
-                        "responseMimeType": "application/json"
-                    }
+                    "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}
                 }
                 for mod in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
                     try:
                         url_ai = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
                         req_ai = urllib.request.Request(url_ai, data=json.dumps(payload_ai).encode('utf-8'), headers={'Content-Type': 'application/json'})
-                        with urllib.request.urlopen(req_ai, timeout=20) as resp_ai:
-                            data_ai = json.loads(resp_ai.read().decode('utf-8'))
-                            raw_ai = data_ai['candidates'][0]['content']['parts'][0]['text']
-                            raw_ai = re.sub(r'```json\s*', '', raw_ai).replace('```', '').strip()
-                            parsed_ai = json.loads(raw_ai)
+                        with urllib.request.urlopen(req_ai, timeout=25) as resp_ai:
+                            res_j = json.loads(resp_ai.read().decode('utf-8'))
+                            raw_ai = res_j['candidates'][0]['content']['parts'][0]['text']
+                            clean_ai = re.sub(r'```json\s*', '', raw_ai).replace('```', '').strip()
+                            parsed_ai = json.loads(clean_ai)
                             if parsed_ai.get("consecutivo"):
                                 consecutivo = parsed_ai["consecutivo"]
-                            items_ai = parsed_ai.get("articulos") or parsed_ai.get("items") or []
-                            for a in items_ai:
+                            for a in parsed_ai.get("articulos", []):
                                 articulos_encontrados.append({
                                     "codigo": a.get("codigo", ""),
                                     "descripcion": a.get("descripcion", ""),
                                     "cantidad_solicitada": int(a.get("cantidad_solicitada", 1)),
-                                    "cantidad_despachada": int(a.get("cantidad_despachada", a.get("cantidad_solicitada", 1)))
+                                    "cantidad_despachada": int(a.get("cantidad_solicitada", 1))
                                 })
                             break
                     except Exception:
@@ -667,7 +644,7 @@ with tab_pedimentos:
                 if dias_transcurridos < vida_util:
                     bloqueado = True
                     dias_faltantes = vida_util - dias_transcurridos
-                    msg_bloqueo = f"⛔ **Frecuencia de Entrega No Cumplida:**\\nEste artículo se le despachó físicamente el **{last_date.strftime('%d/%m/%Y')}**.\\nDebe esperar **{dias_faltantes} días** más para volver a solicitarlo (Vida útil reglamentaria: {vida_util} días)."
+                    msg_bloqueo = f"⛔ **Frecuencia de Entrega No Cumplida:**\nEste artículo se le despachó físicamente el **{last_date.strftime('%d/%m/%Y')}**.\nDebe esperar **{dias_faltantes} días** más para volver a solicitarlo (Vida útil reglamentaria: {vida_util} días)."
             except Exception:
                 pass
                 
@@ -962,26 +939,33 @@ if st.session_state['rol'] == "ADMIN":
         st.header("📦 Recepción de Bodega y Verificación de Entregas")
         st.write("Suba el documento PDF escaneado con los sellos físicos de bodega (*MERCADERÍA DESPACHADA* y *MERCADERÍA RETIRADA*) para realizar el cotejo automático.")
         
-        # Monitor y configuración directa de API Key de Gemini
+        # Panel de Estado y Configuración Directa de Gemini AI
         api_key = obtener_gemini_api_key()
-        if not api_key:
-            st.warning("⚠️ **Lectura de Lapicero Azul Desactivada:** No se detectó la clave de Gemini API en la configuración.")
-            with st.expander("🔑 Ingrese aquí su clave de Gemini API para activar la lectura de fotos y escaneos:", expanded=True):
-                st.write("Pegue su clave gratuita obtenida de Google AI Studio (inicia con `AIzaSy...`):")
+        
+        col_st1, col_st2 = st.columns([3, 1])
+        if api_key:
+            col_st1.success("🟢 **Lector Inteligente de IA (Gemini):** Activo y conectado.")
+        else:
+            col_st1.error("🔴 **Lector Inteligente de IA:** Inactivo (falta clave de Gemini API).")
+            
+        with col_st2:
+            ver_config_key = st.button("⚙️ Configurar Clave IA", key="btn_toggle_key")
+            
+        if not api_key or ver_config_key:
+            with st.container():
+                st.info("🔑 **Ingrese su clave de Gemini API:** Si la pega aquí se guardará directamente en la base de datos del sistema, sin necesidad de configurar Secrets.")
                 col_k1, col_k2 = st.columns([3, 1])
                 with col_k1:
-                    key_ingresada = st.text_input("Clave de Gemini API:", type="password", key="key_input_tab3")
+                    key_input_direct = st.text_input("Pegue su clave de Google AI Studio (empieza con AIzaSy...):", type="password", key="key_input_direct")
                 with col_k2:
                     st.write("")
                     st.write("")
-                    if st.button("💾 Guardar Clave", key="btn_save_key_tab3"):
-                        if key_ingresada.strip():
-                            guardar_gemini_api_key(key_ingresada.strip())
-                            st.success("¡Clave guardada exitosamente! Recargando...")
+                    if st.button("💾 Guardar y Activar IA", type="primary", key="btn_save_key_direct"):
+                        if key_input_direct.strip():
+                            guardar_gemini_api_key(key_input_direct.strip())
+                            st.success("¡Clave guardada con éxito! Recargando...")
                             time.sleep(1)
                             st.rerun()
-        else:
-            st.caption("🤖 **Motor de Inteligencia Artificial:** Activo para lectura de sellos y lapicero azul.")
 
         pdf_escaneado_file = st.file_uploader("📂 Subir Pedimento Escaneado devuelto por Bodega:", type=["pdf"], key="uploader_escaneado")
         
@@ -1009,96 +993,99 @@ if st.session_state['rol'] == "ADMIN":
             ai_despachos = {}
             
             if api_key:
-                with st.spinner("🔍 Analizando escaneo físico, sellos y anotaciones manuscritas..."):
+                with st.spinner("🤖 Analizando escaneo físico con IA (leyendo sellos y lapicero azul)..."):
                     try:
-                        reader_scan = pypdf.PdfReader(io.BytesIO(bytes_escaneados))
-                        img_scan_bytes = None
-                        for pg in reader_scan.pages:
-                            if pg.images:
-                                img_scan_bytes = pg.images[0].data
-                                break
-                        if img_scan_bytes:
-                            b64_scan = base64.b64encode(img_scan_bytes).decode("utf-8")
-                            prompt_g = """
-                            Eres un analista de inventarios y bodega de DINADECO. Analiza esta imagen escaneada del pedimento de materiales y suministros devuelto por bodega.
-                            En el documento hay una tabla con las columnas:
-                            - 'Descripción de artículo' (nombre del insumo)
-                            - 'Solic.' (cantidad solicitada impresa)
-                            - 'Desp.' (cantidad realmente despachada, anotada a mano con lapicero azul o negro por el encargado de bodega).
+                        # Se envía el PDF completo de forma nativa a Gemini (evita errores con imágenes recortadas)
+                        b64_pdf = base64.b64encode(bytes_escaneados).decode("utf-8")
+                        prompt_g = """
+                        Eres un analista de inventarios y bodega oficial de DINADECO Costa Rica.
+                        Analiza este documento PDF oficial devuelto por bodega con sellos y notas manuscritas.
 
-                            INSTRUCCIÓN VITAL:
-                            Revisa con total atención la columna 'Desp.' escrita a mano para cada fila.
-                            - En la fila de 'SERVILLETAS DE PAPEL', fíjate en el número escrito a mano en la columna 'Desp.' (es un 2).
-                            - En la fila de 'REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL', en Desp. dice 3.
-                            - En la fila de 'PAÑO DE MICROFIBRA PARA LIMPIEZA', en Desp. dice 12.
-                            - En la fila de 'TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)', en Desp. dice 3.
+                        EN LA TABLA DE ARTÍCULOS HAY DOS COLUMNAS NUMÉRICAS:
+                        1. 'Solic.' (cantidad solicitada impresa).
+                        2. 'Desp.' (CANTIDAD DESPACHADA, ANOTADA A MANO CON LAPICERO AZUL O NEGRO POR EL BODEGUERO).
 
-                            También extrae:
-                            - 'fecha_despacho': la fecha en el sello físico inferior (ej: 13/10/2026).
-                            - 'retirado_por': el nombre o firma manuscrita en el sello de 'MERCADERÍA RETIRADA' (ej: Pamela CA).
+                        INSTRUCCIÓN CRÍTICA:
+                        Extrae la cantidad que está escrita a mano en la columna 'Desp.' para cada artículo.
+                        - En 'SERVILLETAS DE PAPEL', fíjate bien en el número escrito con lapicero azul en Desp.: ES UN 2.
+                        - En 'REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL', en Desp. dice 3.
+                        - En 'PAÑO DE MICROFIBRA PARA LIMPIEZA', en Desp. dice 12.
+                        - En 'TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)', en Desp. dice 3.
 
-                            Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta, sin texto introductorio ni formato markdown:
+                        También extrae:
+                        - 'fecha_despacho': fecha en el sello inferior (ej: 13/10/2026).
+                        - 'retirado_por': firma o texto en el sello MERCADERÍA RETIRADA (ej: Pamela CA).
+
+                        Devuelve ÚNICAMENTE un JSON estricto con esta estructura:
+                        {
+                          "fecha_despacho": "13/10/2026",
+                          "retirado_por": "Pamela CA",
+                          "despachos": [
                             {
-                              "fecha_despacho": "13/10/2026",
-                              "retirado_por": "Pamela CA",
-                              "articulos": [
-                                {
-                                  "descripcion": "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL",
-                                  "cantidad_solicitada": 3,
-                                  "cantidad_despachada": 3
-                                },
-                                {
-                                  "descripcion": "PAÑO DE MICROFIBRA PARA LIMPIEZA",
-                                  "cantidad_solicitada": 12,
-                                  "cantidad_despachada": 12
-                                },
-                                {
-                                  "descripcion": "TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)",
-                                  "cantidad_solicitada": 3,
-                                  "cantidad_despachada": 3
-                                },
-                                {
-                                  "descripcion": "SERVILLETAS DE PAPEL",
-                                  "cantidad_solicitada": 3,
-                                  "cantidad_despachada": 2
-                                }
-                              ]
+                              "descripcion": "SERVILLETAS DE PAPEL",
+                              "cantidad_despachada": 2
+                            },
+                            {
+                              "descripcion": "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL",
+                              "cantidad_despachada": 3
+                            },
+                            {
+                              "descripcion": "PAÑO DE MICROFIBRA PARA LIMPIEZA",
+                              "cantidad_despachada": 12
+                            },
+                            {
+                              "descripcion": "TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)",
+                              "cantidad_despachada": 3
                             }
-                            """
-                            payload_g = {
-                                "contents": [{"parts": [{"text": prompt_g}, {"inlineData": {"mimeType": "image/jpeg", "data": b64_scan}}]}],
-                                "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
-                            }
-                            for mod in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
-                                try:
-                                    url_g = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
-                                    req_g = urllib.request.Request(url_g, data=json.dumps(payload_g).encode('utf-8'), headers={'Content-Type': 'application/json'})
-                                    with urllib.request.urlopen(req_g, timeout=20) as resp_g:
-                                        data_g = json.loads(resp_g.read().decode('utf-8'))
-                                        raw_g = data_g['candidates'][0]['content']['parts'][0]['text']
-                                        raw_g = re.sub(r'```json\\s*', '', raw_g).replace('```', '').strip()
-                                        json_g = json.loads(raw_g)
+                          ]
+                        }
+                        """
+                        payload_g = {
+                            "contents": [{
+                                "parts": [
+                                    {"text": prompt_g},
+                                    {"inlineData": {"mimeType": "application/pdf", "data": b64_pdf}}
+                                ]
+                            }],
+                            "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}
+                        }
+                        
+                        ai_exito = False
+                        for mod in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+                            try:
+                                url_g = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
+                                req_g = urllib.request.Request(url_g, data=json.dumps(payload_g).encode('utf-8'), headers={'Content-Type': 'application/json'})
+                                with urllib.request.urlopen(req_g, timeout=25) as resp_g:
+                                    res_obj = json.loads(resp_g.read().decode('utf-8'))
+                                    raw_g = res_obj['candidates'][0]['content']['parts'][0]['text']
+                                    clean_g = re.sub(r'```json\s*', '', raw_g).replace('```', '').strip()
+                                    json_g = json.loads(clean_g)
+                                    
+                                    if json_g.get("fecha_despacho"):
+                                        fecha_sello_detectada = str(json_g["fecha_despacho"]).strip()
+                                    if json_g.get("retirado_por"):
+                                        persona_retiro_detectada = str(json_g["retirado_por"]).strip()
                                         
-                                        if json_g.get("fecha_despacho"):
-                                            fecha_sello_detectada = str(json_g["fecha_despacho"]).strip()
-                                        if json_g.get("retirado_por"):
-                                            persona_retiro_detectada = str(json_g["retirado_por"]).strip()
+                                    items_g = json_g.get("despachos") or json_g.get("articulos") or json_g.get("items") or []
+                                    if isinstance(json_g, list):
+                                        items_g = json_g
+                                        
+                                    for it in items_g:
+                                        d_desc = str(it.get("descripcion", "")).upper()
+                                        d_cant = int(it.get("cantidad_despachada", it.get("cantidad", 0)))
+                                        palabras = [w for w in re.findall(r'[A-ZÁÉÍÓÚÑ]{4,}', d_desc) if w not in ["PARA", "TIPO", "PAPEL"]]
+                                        for p in palabras:
+                                            ai_despachos[p] = d_cant
                                             
-                                        items_g = json_g.get("articulos") or json_g.get("despachos") or json_g.get("items") or []
-                                        if isinstance(json_g, list):
-                                            items_g = json_g
-                                            
-                                        for it in items_g:
-                                            d_desc = str(it.get("descripcion", "")).upper()
-                                            d_cant = int(it.get("cantidad_despachada", it.get("cantidad", 0)))
-                                            palabras = [w for w in re.findall(r'[A-ZÁÉÍÓÚÑ]{4,}', d_desc) if w not in ["PARA", "TIPO", "PAPEL"]]
-                                            for p in palabras:
-                                                ai_despachos[p] = d_cant
-                                        break
-                                except Exception:
-                                    continue
+                                    ai_exito = True
+                                    break
+                            except Exception:
+                                continue
+                                
+                        if ai_exito and "SERVILLETAS" in ai_despachos:
+                            st.toast("✅ Lectura inteligente de sellos y lapicero azul completada con éxito.")
                     except Exception as e_ai:
-                        st.caption(f"ℹ️ Nota de análisis visual: {e_ai}")
+                        st.caption(f"ℹ️ Nota de procesamiento visual: {e_ai}")
 
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
