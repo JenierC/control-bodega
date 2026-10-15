@@ -144,12 +144,15 @@ def verificar_base_datos():
 
     hash_temp = hashlib.sha256(CLAVE_TEMPORAL_DEFAULT.encode()).hexdigest()
     for u in LISTA_USUARIOS_OFICIALES:
-        cursor.execute("SELECT id FROM funcionarios WHERE username=?", (u["username"],))
-        if not cursor.fetchone():
+        cursor.execute("SELECT id, COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE LOWER(TRIM(username))=?", (u["username"].lower(),))
+        row_u = cursor.fetchone()
+        if not row_u:
             cursor.execute("""
                 INSERT INTO funcionarios (nombre, puesto, espacio_asignado, username, email, password, rol, estado, debe_cambiar_password)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVO', 1)
             """, (u["nombre"], u["puesto"], u["espacio"], u["username"], u["email"], hash_temp, u["rol"]))
+        elif row_u[1] == 1:
+            cursor.execute("UPDATE funcionarios SET password=? WHERE id=?", (hash_temp, row_u[0]))
 
     conn.commit()
     conn.close()
@@ -348,10 +351,12 @@ if st.session_state['rol'] != "ADMIN":
     """, unsafe_allow_html=True)
 
 def login(user, pwd):
-    hash_pwd = hashlib.sha256(pwd.encode()).hexdigest()
+    user_clean = user.strip().lower()
+    pwd_clean = pwd.strip()
+    hash_pwd = hashlib.sha256(pwd_clean.encode()).hexdigest()
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nombre, rol, estado, COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE username=? AND password=?", (user, hash_pwd))
+    cursor.execute("SELECT id, nombre, rol, estado, COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE LOWER(TRIM(username))=? AND password=?", (user_clean, hash_pwd))
     result = cursor.fetchone()
     conn.close()
     
@@ -959,6 +964,7 @@ if st.session_state['rol'] == "ADMIN":
             persona_retiro_detectada = "Pamela CA"
             ai_despachos = {}
             
+            # Regla de extracción específica para el pedimento verificado 051-2026
             if consecutivo_detectado == "051-2026":
                 ai_despachos = {
                     "AROMATIZANTE": 3,
@@ -1437,6 +1443,20 @@ if st.session_state['rol'] == "ADMIN":
         
         st.dataframe(df_todos_usuarios, use_container_width=True)
         
+        st.write("**Restablecimiento Rápido de Contraseñas:**")
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            if st.button("🔄 Restablecer a TODOS los funcionarios a 'Dinadeco2026*'", key="btn_reset_all_officials"):
+                c_master = conn.cursor()
+                h_def = hashlib.sha256(CLAVE_TEMPORAL_DEFAULT.encode()).hexdigest()
+                for of_u in LISTA_USUARIOS_OFICIALES:
+                    c_master.execute("UPDATE funcionarios SET password=?, debe_cambiar_password=1 WHERE LOWER(TRIM(username))=?", (h_def, of_u["username"].lower()))
+                conn.commit()
+                sync_usuarios_excel()
+                st.success("✅ ¡Se han restablecido todas las cuentas oficiales a la clave temporal 'Dinadeco2026*'!")
+                st.rerun()
+
+        st.markdown("---")
         st.write("**Editar datos, restablecer contraseñas o eliminar un usuario:**")
         user_sel_id = st.selectbox(
             "Seleccione el Usuario a gestionar:", 
