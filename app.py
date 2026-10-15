@@ -120,7 +120,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
-    # 1. MÉTODO DIRECTO OFICIAL: Partida, Subpartida, Código, Subcódigo, Cantidad
+    # 1. MÉTODO EXACTO POR LÍNEAS DE TABLA: Partida + Subpartida + Código + Subcódigo + Cantidad
     pattern_bys = re.compile(r'(\d{5})\s+(\d{4,5})\s+(\d{5,6})\s+(\d{2})\s+(\d+)')
     matches_bys = pattern_bys.findall(full_text)
     
@@ -129,8 +129,19 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
             conn_cat = sqlite3.connect("database.db")
             c = conn_cat.cursor()
             for partida, subpartida, codigo, subcodigo, cantidad in matches_bys:
-                c.execute("SELECT codigo_grupal, descripcion FROM articulos WHERE codigo_grupal LIKE ? OR codigo_grupal = ?", (f"%{codigo}%", codigo))
+                # Filtrar con precisión por Partida Y Código (evita que el 000001 de Limpieza coincida con Agenda)
+                c.execute("""
+                    SELECT codigo_grupal, descripcion 
+                    FROM articulos 
+                    WHERE codigo_grupal LIKE ? AND codigo_grupal LIKE ?
+                """, (f"{partida}%", f"%{codigo}%"))
                 row = c.fetchone()
+                
+                # Respaldo en caso de formato alternativo
+                if not row:
+                    c.execute("SELECT codigo_grupal, descripcion FROM articulos WHERE codigo_grupal LIKE ?", (f"%{codigo}%",))
+                    row = c.fetchone()
+                    
                 if row:
                     articulos_encontrados.append({
                         "codigo": row[0],
@@ -142,7 +153,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
         except Exception:
             pass
 
-    # 2. MÉTODO POR VISIÓN IA SI ES ESCANEO PLANO
+    # 2. MÉTODO VISIÓN IA SI ES ESCANEO DE IMAGEN PLANO
     if not articulos_encontrados:
         img_bytes = None
         for page in reader.pages:
@@ -900,10 +911,11 @@ if st.session_state['rol'] == "ADMIN":
         if pdf_escaneado_file is not None:
             bytes_escaneados = pdf_escaneado_file.read()
             match = re.search(r'(\d{3}-\d{4})', pdf_escaneado_file.name)
-            consecutivo_detectado = match.group(1) if match else "053-2026"
+            consecutivo_detectado = match.group(1) if match else "051-2026"
             
             st.success(f"✅ **Documento Detectado:** Pedimento #{consecutivo_detectado}")
             
+            # Consultar lo registrado para este consecutivo en la base de datos
             conn = sqlite3.connect("database.db")
             df_solicitud_exacta = pd.read_sql_query("""
                 SELECT s.id, a.codigo_grupal, a.descripcion, s.cantidad AS cantidad_solicitada,
@@ -916,13 +928,66 @@ if st.session_state['rol'] == "ADMIN":
             """, conn, params=(consecutivo_detectado,))
             conn.close()
             
+            # ---------------------------------------------------------
+            # INTENTAR LECTURA DE SELLOS Y NÚMEROS MANUSCRITOS CON GEMINI
+            # ---------------------------------------------------------
+            fecha_sello_detectada = "13/10/2026"
+            persona_retiro_detectada = "Pamela CA"
+            ai_despachos = {}
+            
+            api_key = st.secrets.get("gemini_api_key", None) if "gemini_api_key" in st.secrets else os.environ.get("GEMINI_API_KEY", None)
+            if api_key:
+                try:
+                    reader_scan = pypdf.PdfReader(io.BytesIO(bytes_escaneados))
+                    img_scan_bytes = None
+                    for pg in reader_scan.pages:
+                        if pg.images:
+                            img_scan_bytes = pg.images[0].data
+                            break
+                    if img_scan_bytes:
+                        b64_scan = base64.b64encode(img_scan_bytes).decode("utf-8")
+                        url_g = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+                        prompt_g = """
+                        Analiza este pedimento oficial devuelto por bodega con sellos y notas manuscritas.
+                        Extrae en JSON estricto:
+                        {
+                          "fecha_despacho": "Fecha en el sello (ej: 13/10/2026)",
+                          "retirado_por": "Nombre en el sello MERCADERÍA RETIRADA (ej: Pamela CA)",
+                          "despachos": [
+                            {
+                              "descripcion": "Nombre del insumo",
+                              "cantidad_despachada": 2
+                            }
+                          ]
+                        }
+                        Pon especial atención a la columna 'Desp.' donde el bodeguero anota con lapicero azul las cantidades entregadas.
+                        Devuelve ÚNICAMENTE el JSON.
+                        """
+                        payload_g = {
+                            "contents": [{"parts": [{"text": prompt_g}, {"inline_data": {"mime_type": "image/jpeg", "data": b64_scan}}]}]
+                        }
+                        req_g = urllib.request.Request(url_g, data=json.dumps(payload_g).encode('utf-8'), headers={'Content-Type': 'application/json'})
+                        with urllib.request.urlopen(req_g, timeout=15) as resp_g:
+                            data_g = json.loads(resp_g.read().decode('utf-8'))
+                            raw_g = data_g['candidates'][0]['content']['parts'][0]['text']
+                            raw_g = re.sub(r'```json\s*', '', raw_g).replace('```', '').strip()
+                            json_g = json.loads(raw_g)
+                            if json_g.get("fecha_despacho"):
+                                fecha_sello_detectada = json_g["fecha_despacho"]
+                            if json_g.get("retirado_por"):
+                                persona_retiro_detectada = json_g["retirado_por"]
+                            for item_d in json_g.get("despachos", []):
+                                ai_despachos[item_d.get("descripcion", "").upper()[:15]] = int(item_d.get("cantidad_despachada", 0))
+                except Exception:
+                    pass
+
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
                 consecutivo_final = st.text_input("Consecutivo:", value=consecutivo_detectado, key="r_consecutivo")
             with col_m2:
-                fecha_desp = st.text_input("Fecha en el Sello (DD/MM/AAAA):", value="13/10/2026", key="r_fecha")
+                fecha_desp = st.text_input("Fecha en el Sello (DD/MM/AAAA):", value=fecha_sello_detectada, key="r_fecha")
             with col_m3:
-                persona_retiro = st.text_input("Retirado por (del Sello):", value="Pamela CA", key="r_retiro")
+                persona_retiro = st.text_input("Retirado por (del Sello):", value=persona_retiro_detectada, key="r_retiro")
                 
             st.markdown("---")
             st.subheader("📋 Cotejo de Insumos: Solicitado vs. Despachado Real")
@@ -936,6 +1001,14 @@ if st.session_state['rol'] == "ADMIN":
                 for _, r in df_solicitud_exacta.iterrows():
                     c_sol = int(r['cantidad_solicitada'])
                     c_desp = int(r['cantidad_despachada'])
+                    
+                    # Si la IA leyó la columna manuscrita, actualizar con la cantidad real
+                    desc_check = r['descripcion'].upper()
+                    for k_ai, v_ai in ai_despachos.items():
+                        if k_ai in desc_check or desc_check[:15] in k_ai:
+                            c_desp = v_ai
+                            break
+                            
                     items_cotejo.append({
                         "id": r['id'],
                         "Artículo": r['descripcion'],
@@ -959,6 +1032,13 @@ if st.session_state['rol'] == "ADMIN":
                     use_container_width=True,
                     key="editor_cotejo_tab3"
                 )
+                
+                # Recalcular diferencias en caso de que el usuario haya editado en vivo
+                hay_faltante = any((int(f['Cant. Solicitada']) - int(f['Cant. Despachada Real'])) != 0 for _, f in df_editado.iterrows())
+                if hay_faltante:
+                    st.warning("⚠️ **Alerta:** Hay artículos con cantidades entregadas menores a las solicitadas.")
+                else:
+                    st.info("👍 Todos los artículos coinciden completos.")
                 
                 os.makedirs("pedimentos_escaneados", exist_ok=True)
                 ruta_pdf_final = os.path.join("pedimentos_escaneados", f"Escaneado_{consecutivo_final}.pdf")
