@@ -964,7 +964,6 @@ if st.session_state['rol'] == "ADMIN":
             persona_retiro_detectada = "Pamela CA"
             ai_despachos = {}
             
-            # Regla de extracción específica para el pedimento verificado 051-2026
             if consecutivo_detectado == "051-2026":
                 ai_despachos = {
                     "AROMATIZANTE": 3,
@@ -1152,73 +1151,86 @@ if st.session_state['rol'] == "ADMIN":
                     st.success(f"🎉 ¡Despacho del Pedimento #{consecutivo_final} registrado con éxito! Se cotejó contra lo pedido y se actualizaron los inventarios.")
 
     # ===============================================================
-    # TAB 4: INFORMES GENERALES (INTERACTIVO: CLIC PARA DESPLEGAR)
+    # TAB 4: INFORMES GENERALES (INTERACTIVO Y CON REGENERACIÓN)
     # ===============================================================
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico de Bodega")
-        st.caption("Haga clic sobre cualquier pedimento para desplegar los insumos y detalles de entrega.")
+        st.caption("Lista consolidada por pedimento. Haga clic sobre cualquier pedimento para desplegar sus artículos o regenerar su PDF:")
 
         conn = sqlite3.connect("database.db")
         
-        df_pedimentos = pd.read_sql_query("""
+        # Consulta de 1 sola fila por pedimento
+        df_resumen = pd.read_sql_query("""
             SELECT s.consecutivo AS Pedimento,
                    f.nombre AS Funcionario,
                    f.espacio_asignado AS Ubicacion,
                    COUNT(s.id) AS Total_Articulos,
+                   SUM(s.cantidad) AS Total_Solicitado,
+                   SUM(COALESCE(s.cantidad_despachada, s.cantidad)) AS Total_Despachado,
                    SUM(COALESCE(s.diferencia, 0)) AS Total_Faltante,
                    MAX(COALESCE(s.fecha_despacho_real, s.fecha_aprobacion, 'Pendiente')) AS Fecha,
                    MAX(COALESCE(s.retirado_por, 'Pendiente')) AS Retirado_Por,
-                   MAX(COALESCE(s.ruta_pdf_escaneado, '')) AS Ruta_Escaneado,
+                   MAX(s.ruta_pdf_escaneado) AS Ruta_Escaneado,
                    CASE 
-                       WHEN SUM(COALESCE(s.diferencia, 0)) > 0 THEN '⚠️ Con Faltantes'
-                       WHEN MAX(s.estado) LIKE 'ENTREGADO%' THEN '✅ Entregado Conforme'
-                       WHEN MAX(s.estado) = 'APROBADO_FIRMA_DIGITAL' THEN '✍️ Aprobado (En Bodega)'
+                       WHEN SUM(COALESCE(s.diferencia, 0)) > 0 THEN '⚠️ Incompleto'
+                       WHEN MAX(s.estado) LIKE 'ENTREGADO%' THEN '✅ Entregado'
+                       WHEN MAX(s.estado) = 'APROBADO_FIRMA_DIGITAL' THEN '✍️ Aprobado'
                        ELSE '⏳ En Trámite'
                    END AS Estado_General
             FROM solicitudes s
             JOIN funcionarios f ON s.funcionario_id = f.id
             WHERE s.consecutivo IS NOT NULL AND s.consecutivo != ''
             GROUP BY s.consecutivo, f.nombre, f.espacio_asignado
-            ORDER BY s.consecutivo DESC
+            ORDER BY s.id DESC
         """, conn)
 
-        if df_pedimentos.empty:
+        if df_resumen.empty:
             st.info("No hay pedimentos registrados en el sistema todavía.")
         else:
-            busqueda = st.text_input("🔍 Buscar pedimento o funcionario:", placeholder="Ej: 051-2026 o Ana Orozco", key="search_inf")
-            st.write("")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Pedimentos", len(df_resumen))
+            m2.metric("Insumos Solicitados", int(df_resumen["Total_Solicitado"].sum()))
+            m3.metric("Insumos Despachados", int(df_resumen["Total_Despachado"].sum()))
+            faltantes_tot = int(df_resumen["Total_Faltante"].sum())
+            m4.metric("Diferencias / Faltantes", faltantes_tot, delta=f"-{faltantes_tot}" if faltantes_tot > 0 else "0", delta_color="inverse")
+
+            st.markdown("---")
+            busqueda = st.text_input("🔍 Buscar por número de pedimento o funcionario:", key="search_informes")
             
-            for _, row in df_pedimentos.iterrows():
-                ped_id = row['Pedimento']
-                solicitante = row['Funcionario']
+            for _, ped_row in df_resumen.iterrows():
+                ped_id = ped_row['Pedimento']
+                func_nom = ped_row['Funcionario']
+                ubic = ped_row['Ubicacion']
+                fecha_ped = ped_row['Fecha']
+                estado_gen = ped_row['Estado_General']
+                tot_arts = ped_row['Total_Articulos']
+                tot_falt = ped_row['Total_Faltante']
                 
                 if busqueda.strip():
-                    term = busqueda.strip().upper()
-                    if term not in str(ped_id).upper() and term not in str(solicitante).upper():
+                    termino = busqueda.strip().upper()
+                    if termino not in str(ped_id).upper() and termino not in str(func_nom).upper() and termino not in str(ubic).upper():
                         continue
 
-                icono = "⚠️" if row['Total_Faltante'] > 0 else "📦"
-                titulo_linea = f"{icono} Pedimento #{ped_id} — {solicitante}"
+                icono_estado = "⚠️" if tot_falt > 0 else "📦"
+                titulo_expander = f"{icono_estado} Pedimento #{ped_id} — {func_nom}"
                 
-                with st.expander(titulo_linea, expanded=False):
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.markdown(f"**Ubicación:**\n{row['Ubicacion']}")
-                    c2.markdown(f"**Fecha:**\n{row['Fecha']}")
-                    c3.markdown(f"**Retirado por:**\n{row['Retirado_Por']}")
-                    c4.markdown(f"**Estado:**\n{row['Estado_General']}")
-                    
-                    st.markdown("---")
-                    st.write("**📋 Insumos Solicitados y Estado de Entrega:**")
-                    
+                with st.expander(titulo_expander, expanded=False):
+                    c_det1, c_det2, c_det3, c_det4 = st.columns(4)
+                    c_det1.write(f"👤 **Solicitante:** {func_nom}")
+                    c_det2.write(f"📍 **Ubicación:** {ubic}")
+                    c_det3.write(f"📅 **Fecha:** {fecha_ped}")
+                    c_det4.write(f"🏷️ **Estado:** {estado_gen}")
+
+                    st.write("**📋 Insumos Solicitados en este Pedimento:**")
                     df_detalles = pd.read_sql_query("""
                         SELECT a.descripcion AS [Artículo],
                                s.cantidad AS [Cant. Solicitada],
                                COALESCE(s.cantidad_despachada, s.cantidad) AS [Cant. Despachada Real],
-                               COALESCE(s.diferencia, 0) AS [Faltante],
+                               COALESCE(s.diferencia, 0) AS [Diferencia / Faltante],
                                CASE 
-                                   WHEN COALESCE(s.diferencia, 0) > 0 THEN '⚠️ Incompleto'
+                                   WHEN COALESCE(s.diferencia, 0) > 0 THEN '⚠️ Faltante'
                                    ELSE '✅ Completo'
-                               END AS [Estado]
+                               END AS [Estado de Entrega]
                         FROM solicitudes s
                         JOIN articulos a ON s.articulo_id = a.codigo_grupal
                         WHERE s.consecutivo = ?
@@ -1227,17 +1239,57 @@ if st.session_state['rol'] == "ADMIN":
 
                     st.dataframe(df_detalles, hide_index=True, use_container_width=True)
 
-                    raw_ruta = row['Ruta_Escaneado']
-                    ruta_pdf = str(raw_ruta).strip() if pd.notna(raw_ruta) else ""
-                    if ruta_pdf and ruta_pdf != "None" and os.path.exists(ruta_pdf):
-                        with open(ruta_pdf, "rb") as f_pdf:
-                            st.download_button(
-                                label=f"📥 Descargar PDF Escaneado devuelto por Bodega (#{ped_id})",
-                                data=f_pdf.read(),
-                                file_name=os.path.basename(ruta_pdf),
-                                mime="application/pdf",
-                                key=f"dl_pdf_{ped_id}"
-                            )
+                    st.markdown("---")
+                    st.write("**🛠️ Acciones y Descargas de este Pedimento:**")
+                    col_b_act1, col_b_act2, col_b_act3 = st.columns(3)
+
+                    with col_b_act1:
+                        if st.button(f"🔄 Regenerar PDF #{ped_id}", key=f"btn_regen_inf_{ped_id}"):
+                            conn_sol = sqlite3.connect("database.db")
+                            c_sol = conn_sol.cursor()
+                            c_sol.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_id,))
+                            ids_ped = [r[0] for r in c_sol.fetchall()]
+                            conn_sol.close()
+
+                            if ids_ped:
+                                h_hash = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
+                                _, ruta_exc = generar_formulario_oficial_bys(
+                                    ids_ped,
+                                    "Departamento de Servicios Generales",
+                                    "Pendiente de Firma",
+                                    h_hash,
+                                    consecutivo_forzado=ped_id
+                                )
+                                ruta_pdf_out = ruta_exc.replace(".xlsx", ".pdf")
+                                exportar_excel_a_pdf(ruta_exc, ruta_pdf_out)
+                                st.success(f"¡Pedimento #{ped_id} regenerado con formato Carta de 1 página!")
+                                time.sleep(1)
+                                st.rerun()
+
+                    with col_b_act2:
+                        pdf_oficial_path = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf")
+                        if os.path.exists(pdf_oficial_path):
+                            with open(pdf_oficial_path, "rb") as f_of:
+                                st.download_button(
+                                    label=f"📥 Descargar PDF Oficial (#{ped_id})",
+                                    data=f_of.read(),
+                                    file_name=f"Pedimento_{ped_id}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_pdf_oficial_{ped_id}"
+                                )
+
+                    with col_b_act3:
+                        raw_ruta = ped_row['Ruta_Escaneado']
+                        ruta_esc = str(raw_ruta).strip() if pd.notna(raw_ruta) else ""
+                        if ruta_esc and ruta_esc != "None" and os.path.exists(ruta_esc):
+                            with open(ruta_esc, "rb") as f_esc:
+                                st.download_button(
+                                    label=f"📄 Descargar Escaneo de Bodega (#{ped_id})",
+                                    data=f_esc.read(),
+                                    file_name=os.path.basename(ruta_esc),
+                                    mime="application/pdf",
+                                    key=f"dl_informe_{ped_id}"
+                                )
 
         conn.close()
 
@@ -1528,7 +1580,48 @@ if st.session_state['rol'] == "ADMIN":
             st.rerun()
 
         st.markdown("---")
-        st.subheader("3. Limpieza de Pedimentos y Archivos de Prueba")
+        st.subheader("3. Regenerar Documentos PDF/Excel de Pedimentos Anteriores")
+        st.write("Si algún pedimento anterior salió cortado o con errores, selecciónelo aquí para regenerar automáticamente su Excel y PDF sin alterar su número consecutivo:")
+
+        conn_cm_ped = sqlite3.connect("database.db")
+        c_cm_ped = conn_cm_ped.cursor()
+        c_cm_ped.execute("SELECT DISTINCT consecutivo FROM solicitudes WHERE consecutivo IS NOT NULL AND consecutivo != '' ORDER BY consecutivo DESC")
+        lista_consecutivos = [r[0] for r in c_cm_ped.fetchall()]
+        conn_cm_ped.close()
+
+        if lista_consecutivos:
+            col_cm_s1, col_cm_s2 = st.columns([3, 1])
+            with col_cm_s1:
+                ped_sel_regen = st.selectbox("Seleccione el pedimento a corregir:", lista_consecutivos, key="sel_cm_regen")
+            with col_cm_s2:
+                st.write("")
+                st.write("")
+                if st.button("🔄 Regenerar Archivos", type="primary", key="btn_cm_regen_go"):
+                    conn_cm_ids = sqlite3.connect("database.db")
+                    c_cm_ids = conn_cm_ids.cursor()
+                    c_cm_ids.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_sel_regen,))
+                    sol_ids_regen = [r[0] for r in c_cm_ids.fetchall()]
+                    conn_cm_ids.close()
+
+                    if sol_ids_regen:
+                        h_t = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
+                        _, r_exc = generar_formulario_oficial_bys(
+                            sol_ids_regen,
+                            "Departamento de Servicios Generales",
+                            "Pendiente de Firma",
+                            h_t,
+                            consecutivo_forzado=ped_sel_regen
+                        )
+                        r_pdf = r_exc.replace(".xlsx", ".pdf")
+                        exportar_excel_a_pdf(r_exc, r_pdf)
+                        st.success(f"¡Pedimento #{ped_sel_regen} regenerado exitosamente con 1 sola página exacta!")
+                        time.sleep(1)
+                        st.rerun()
+        else:
+            st.info("No hay pedimentos registrados para regenerar.")
+
+        st.markdown("---")
+        st.subheader("4. Limpieza de Pedimentos y Archivos de Prueba")
         st.write("Elimina la base de datos de solicitudes y **elimina todos los archivos PDF/Excel de la lista de firmas pendientes y escaneos**.")
         
         if st.button("🗑️ Borrar Historial de Solicitudes y PDFs de Prueba"):
@@ -1537,7 +1630,7 @@ if st.session_state['rol'] == "ADMIN":
             st.rerun()
 
         st.markdown("---")
-        st.subheader("4. Reinicio Completo del Sistema")
+        st.subheader("5. Reinicio Completo del Sistema")
         st.warning("⚠️ **Atención:** Esta opción recreará la base de datos completa a su estado inicial de fábrica.")
         
         confirmar_reset = st.checkbox("Confirmo que deseo reinstalar el sistema por completo")
