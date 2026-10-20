@@ -33,8 +33,8 @@ def obtener_siguiente_consecutivo(anio_actual=None):
     return f"{siguiente_num:03d}-{anio_actual}"
 
 
-def cargar_plantilla_original():
-    # 1. Buscar archivos con extensión nativa compatible (.xlsx o .xlsm)
+def cargar_plantilla_segura():
+    # 1. Buscar archivos con extensión nativa compatible
     candidatos = [
         "Pedimentos de Departamento de Servicios Generales.xlsx",
         "Pedimentos de Departamento de Servicios Generales.xlsm",
@@ -56,8 +56,7 @@ def cargar_plantilla_original():
                 except Exception:
                     pass
 
-    # 2. Si solo existe el archivo con extensión .xlk (copia de seguridad de Excel):
-    # Se copia a .xlsx para que openpyxl no arroje InvalidFileException
+    # 2. Si solo existe el archivo .xlk, se copia a .xlsx para evitar InvalidFileException
     for f in os.listdir("."):
         if f.lower().endswith(".xlk"):
             temp_xlsx = "plantilla_desde_xlk.xlsx"
@@ -73,7 +72,7 @@ def cargar_plantilla_original():
 def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departamento de Servicios Generales B", nombre_jefatura="Jenier Camacho Picado", hash_firma="", consecutivo_forzado=None):
     os.makedirs("pedimentos_generados", exist_ok=True)
     
-    wb = cargar_plantilla_original()
+    wb = cargar_plantilla_segura()
     ws = wb['Pedimento'] if 'Pedimento' in wb.sheetnames else wb.active
     
     if consecutivo_forzado:
@@ -123,13 +122,13 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=4, value=sub_codigo)
             ws.cell(row=fila_actual, column=5, value=descripcion)
             ws.cell(row=fila_actual, column=14, value=int(cantidad))
-            ws.cell(row=fila_actual, column=15, value="")  # Despachado queda en blanco para bodega
+            ws.cell(row=fila_actual, column=15, value="")
         elif idx == len(items):
             ws.cell(row=fila_actual, column=1, value="")
             ws.cell(row=fila_actual, column=2, value="")
             ws.cell(row=fila_actual, column=3, value="")
             ws.cell(row=fila_actual, column=4, value="")
-            ws.cell(row=fila_actual, column=5, value="***** UL *****")
+            ws.cell(row=fila_actual, column=5, value="****** UL ******")
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
         else:
@@ -141,14 +140,31 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
 
-    # NO se sobreescribe A46 ni A47 para conservar intacto el recuadro oficial de Jefatura:
-    # "Jenier Camacho Picado / Nombre y firma jefe departamento / Poner sello aquí"
+    # Sustituir el nombre anterior por Jenier Camacho Picado
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value and isinstance(cell.value, str):
+                val_low = cell.value.lower()
+                if "edgar" in val_low or "vargas" in val_low:
+                    cell.value = "Jenier Camacho Picado"
 
-    # Forzar ajuste para que no desborde a una segunda página
+    # ===============================================================
+    # CONFIGURACIÓN DE MÁRGENES (EVITA EL CORTE DEL PIE DE PÁGINA)
+    # ===============================================================
     try:
+        ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
+        ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
         ws.sheet_properties.pageSetUpPr.fitToPage = True
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 1
+        
+        # Margen inferior suficiente para que la fecha y hora no se corten
+        ws.page_margins.top = 0.35
+        ws.page_margins.bottom = 0.85
+        ws.page_margins.left = 0.4
+        ws.page_margins.right = 0.4
+        ws.page_margins.footer = 0.45
+        ws.page_margins.header = 0.2
     except Exception:
         pass
     
