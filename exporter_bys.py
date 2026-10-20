@@ -5,29 +5,35 @@ import sqlite3
 from datetime import datetime
 import os
 
-def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento de Servicios Generales", estado_firma="Pendiente de Firma", hash_transaccion=""):
+def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento de Servicios Generales", estado_firma="Pendiente de Firma", hash_transaccion="", consecutivo_forzado=None):
     os.makedirs("pedimentos_generados", exist_ok=True)
     
-    # 1. Obtener y actualizar consecutivo en base de datos
+    # 1. Obtener consecutivo (usar el forzado para regenerar o incrementar en pedidos nuevos)
     anio_actual = datetime.now().year
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS control_consecutivos (
-            anio INTEGER PRIMARY KEY,
-            ultimo_numero INTEGER NOT NULL
-        )
-    """)
-    cursor.execute("SELECT ultimo_numero FROM control_consecutivos WHERE anio = ?", (anio_actual,))
-    row = cursor.fetchone()
-    ultimo_num = row[0] if row else 50
-    nuevo_num = ultimo_num + 1
-    cursor.execute("INSERT OR REPLACE INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, nuevo_num))
-    conn.commit()
     
-    consecutivo = f"{nuevo_num:03d}-{anio_actual}"
+    if consecutivo_forzado:
+        consecutivo = str(consecutivo_forzado).strip()
+    else:
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS control_consecutivos (
+                anio INTEGER PRIMARY KEY,
+                ultimo_numero INTEGER NOT NULL
+            )
+        """)
+        cursor.execute("SELECT ultimo_numero FROM control_consecutivos WHERE anio = ?", (anio_actual,))
+        row = cursor.fetchone()
+        ultimo_num = row[0] if row else 50
+        nuevo_num = ultimo_num + 1
+        cursor.execute("INSERT OR REPLACE INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, nuevo_num))
+        conn.commit()
+        conn.close()
+        consecutivo = f"{nuevo_num:03d}-{anio_actual}"
     
     # 2. Obtener datos de las solicitudes
+    conn = sqlite3.connect("database.db")
+    cursor = conn.cursor()
     placeholders = ",".join("?" * len(ids_solicitudes))
     cursor.execute(f"""
         SELECT s.id, a.codigo_grupal, a.descripcion, s.cantidad, f.nombre, f.espacio_asignado
@@ -215,7 +221,7 @@ def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento d
     ws["E24"].alignment = align_right
 
     # ===============================================================
-    # CONFIGURACIÓN ESTRICTA DE PÁGINA (SOLUCIÓN DEL CORTE / DESBORDE)
+    # CONFIGURACIÓN ESTRICTA DE PÁGINA (1 SOLA PÁGINA EXACTA)
     # ===============================================================
     ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
     ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
