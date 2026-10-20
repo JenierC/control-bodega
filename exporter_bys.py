@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime
 import os
 
-PLANTILLA_BYS = "Pedimentos de Departamento de Servicios Generales.xlk"
+PLANTILLA_BYS = "Pedimentos de Departamento de Servicios Generales.xlsx"
 
 def obtener_siguiente_consecutivo(anio_actual=None):
     if not anio_actual:
@@ -36,38 +36,37 @@ def obtener_siguiente_consecutivo(anio_actual=None):
 
 
 def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_jefatura, hash_firma, consecutivo_forzado=None):
-    # Detección de la plantilla institucional oficial en el repositorio
-    posibles_plantillas = [
-        "Pedimentos de Departamento de Servicios Generales.xlk",
-        "Pedimentos de Departamento de Servicios Generales.xlsx",
-        "Pedimentos de Departamento de Servicios Generales.xlsm",
-        "Pedimentos de Departamento de Servicios Generales B.xlsm",
-        "Pedimentos de Departamento de Servicios Generales B.xlsx"
-    ]
-    
+    # Buscar primero los formatos nativos soportados (.xlsx / .xlsm)
     plantilla = None
-    for p in posibles_plantillas:
-        if os.path.exists(p):
-            plantilla = p
+    candidatos = [
+        "Pedimentos de Departamento de Servicios Generales.xlsx",
+        "Pedimentos de Departamento de Servicios Generales B.xlsx",
+        "Pedimentos de Departamento de Servicios Generales.xlsm",
+        "Pedimentos de Departamento de Servicios Generales B.xlsm"
+    ]
+    for c in candidatos:
+        if os.path.exists(c):
+            plantilla = c
             break
             
     if not plantilla:
         for f in os.listdir("."):
-            if f.startswith("Pedimentos de Departamento") and any(f.endswith(ext) for ext in [".xlk", ".xlsx", ".xlsm"]):
+            if (f.endswith(".xlsx") or f.endswith(".xlsm")) and ("Pedimento" in f or "Servicios Generales" in f):
                 plantilla = f
                 break
                 
     if not plantilla:
-        raise FileNotFoundError(f"No se encuentra la plantilla oficial: {PLANTILLA_BYS}")
+        if os.path.exists(PLANTILLA_BYS):
+            plantilla = PLANTILLA_BYS
+        else:
+            raise FileNotFoundError(f"No se encuentra la plantilla oficial de pedimentos: {PLANTILLA_BYS}")
 
     wb = openpyxl.load_workbook(plantilla)
-    
     if 'Pedimento' in wb.sheetnames:
         ws = wb['Pedimento']
     else:
         ws = wb.active
     
-    # Si se pide regenerar un pedimento viejo, mantiene su consecutivo; si es nuevo, incrementa
     if consecutivo_forzado:
         consecutivo = str(consecutivo_forzado).strip()
     else:
@@ -75,7 +74,6 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
         
     fecha_actual = datetime.now()
     
-    # Celdas exactas del formato institucional original
     ws['N8'] = consecutivo
     ws['N7'] = fecha_actual.strftime("%d/%m/%Y")
     ws['D8'] = nombre_departamento
@@ -117,7 +115,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_je
     ws['A46'] = f"Aprobado digitalmente por: {nombre_jefatura}"
     ws['A47'] = f"Hash de Firma: {hash_firma[:16]}... | Fecha: {fecha_actual.strftime('%Y-%m-%d %H:%M')}"
     
-    # Regla estricta para forzar a 1 sola página exacta sin desbordes ni hojas huérfanas
+    # Asegurar que se imprima/exporte en 1 sola página exacta sin cortar
     try:
         ws.sheet_properties.pageSetUpPr.fitToPage = True
         ws.page_setup.fitToWidth = 1
