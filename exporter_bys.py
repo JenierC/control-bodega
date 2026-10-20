@@ -2,6 +2,8 @@ import openpyxl
 import sqlite3
 from datetime import datetime
 import os
+import shutil
+import subprocess
 
 PLANTILLA_BYS = "Pedimentos de Departamento de Servicios Generales.xlsx"
 
@@ -36,30 +38,61 @@ def obtener_siguiente_consecutivo(anio_actual=None):
 
 
 def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento, nombre_jefatura, hash_firma, consecutivo_forzado=None):
-    # Buscar primero los formatos nativos soportados (.xlsx / .xlsm)
+    # 1. Selección segura de la plantilla original de DINADECO
+    # Primero buscamos archivos nativos .xlsx o .xlsm para evitar el error de extensión .xlk en openpyxl
     plantilla = None
-    candidatos = [
+    candidatos_nativos = [
         "Pedimentos de Departamento de Servicios Generales.xlsx",
-        "Pedimentos de Departamento de Servicios Generales B.xlsx",
         "Pedimentos de Departamento de Servicios Generales.xlsm",
+        "Pedimentos de Departamento de Servicios Generales B.xlsx",
         "Pedimentos de Departamento de Servicios Generales B.xlsm"
     ]
-    for c in candidatos:
+    for c in candidatos_nativos:
         if os.path.exists(c):
-            plantilla = c
-            break
-            
+            try:
+                openpyxl.load_workbook(c)
+                plantilla = c
+                break
+            except Exception:
+                pass
+
     if not plantilla:
         for f in os.listdir("."):
-            if (f.endswith(".xlsx") or f.endswith(".xlsm")) and ("Pedimento" in f or "Servicios Generales" in f):
-                plantilla = f
-                break
-                
+            if (f.endswith(".xlsx") or f.endswith(".xlsm")) and ("pedimento" in f.lower() or "servicios" in f.lower()):
+                try:
+                    openpyxl.load_workbook(f)
+                    plantilla = f
+                    break
+                except Exception:
+                    pass
+
+    # Si solo existe el archivo con extensión .xlk (backup de Excel), lo convertimos a .xlsx
+    if not plantilla:
+        for f in os.listdir("."):
+            if f.endswith(".xlk"):
+                temp_xlsx = f.replace(".xlk", "_plantilla.xlsx")
+                shutil.copyfile(f, temp_xlsx)
+                try:
+                    openpyxl.load_workbook(temp_xlsx)
+                    plantilla = temp_xlsx
+                    break
+                except Exception:
+                    soffice = shutil.which("libreoffice") or shutil.which("soffice")
+                    if soffice:
+                        try:
+                            subprocess.run([soffice, "--headless", "--convert-to", "xlsx", f], check=True, timeout=15)
+                            conv = f.replace(".xlk", ".xlsx")
+                            if os.path.exists(conv):
+                                plantilla = conv
+                                break
+                        except Exception:
+                            pass
+
     if not plantilla:
         if os.path.exists(PLANTILLA_BYS):
             plantilla = PLANTILLA_BYS
         else:
-            raise FileNotFoundError(f"No se encuentra la plantilla oficial de pedimentos: {PLANTILLA_BYS}")
+            raise FileNotFoundError("No se encuentra la plantilla oficial 'Pedimentos de Departamento de Servicios Generales'")
 
     wb = openpyxl.load_workbook(plantilla)
     if 'Pedimento' in wb.sheetnames:
