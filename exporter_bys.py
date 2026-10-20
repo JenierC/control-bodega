@@ -6,6 +6,8 @@ import os
 import shutil
 import zipfile
 
+PLANTILLA_BYS = "Pedimentos de Departamento de Servicios Generales.xlsx"
+
 def obtener_siguiente_consecutivo(anio_actual=None):
     if not anio_actual:
         anio_actual = datetime.now().year
@@ -25,7 +27,7 @@ def obtener_siguiente_consecutivo(anio_actual=None):
         siguiente_num = row[0] + 1
         cursor.execute("UPDATE control_consecutivos SET ultimo_numero = ? WHERE anio = ?", (siguiente_num, anio_actual))
     else:
-        siguiente_num = 51
+        siguiente_num = 51  # Inicia en el consecutivo 051
         cursor.execute("INSERT INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, siguiente_num))
         
     conn.commit()
@@ -33,47 +35,42 @@ def obtener_siguiente_consecutivo(anio_actual=None):
     return f"{siguiente_num:03d}-{anio_actual}"
 
 
-def cargar_o_crear_plantilla_oficial():
+def cargar_plantilla_segura():
     """
-    Busca la plantilla oficial en formatos compatibles (.xlsx/.xlsm).
-    Evita estrictamente el error InvalidFileException al descartar extensiones .xlk.
-    Si no encuentra un archivo válido, genera la plantilla oficial de DINADECO en memoria.
+    Localiza la plantilla oficial en tu repositorio evitando el error de extensión .xlk en openpyxl.
+    Si no encuentra la plantilla en disco, genera el formato oficial de DINADECO en memoria.
     """
-    candidatos = [
+    # 1. Candidatos con extensiones nativas compatibles (.xlsx o .xlsm)
+    candidatos_nativos = [
         "Pedimentos de Departamento de Servicios Generales.xlsx",
-        "Pedimentos de Departamento de Servicios Generales.xlsm",
         "Pedimentos de Departamento de Servicios Generales B.xlsx",
+        "Pedimentos de Departamento de Servicios Generales.xlsm",
         "Pedimentos de Departamento de Servicios Generales B.xlsm"
     ]
-    
-    # 1. Probar candidatos directos compatibles
-    for c in candidatos:
+    for c in candidatos_nativos:
         if os.path.exists(c):
             try:
-                if zipfile.is_zipfile(c):
-                    return openpyxl.load_workbook(c), "TEMPLATE"
+                return openpyxl.load_workbook(c), "TEMPLATE"
             except Exception:
                 pass
 
-    # 2. Buscar cualquier archivo .xlsx o .xlsm en la carpeta raíz
+    # 2. Buscar cualquier archivo de plantilla .xlsx o .xlsm en la raíz
     for f in os.listdir("."):
-        if f.lower().endswith((".xlsx", ".xlsm")) and not f.startswith("~"):
+        if (f.lower().endswith(".xlsx") or f.lower().endswith(".xlsm")) and not f.startswith("~"):
             if "pedimento" in f.lower() or "servicios" in f.lower():
                 try:
-                    if zipfile.is_zipfile(f):
-                        return openpyxl.load_workbook(f), "TEMPLATE"
+                    return openpyxl.load_workbook(f), "TEMPLATE"
                 except Exception:
                     pass
 
-    # 3. Si únicamente existe el archivo .xlk (copia de seguridad de Excel)
+    # 3. Si solo existe el archivo con extensión .xlk (copia de seguridad de Excel):
+    # Se copia temporalmente a .xlsx para que openpyxl lo acepte sin arrojar InvalidFileException
     for f in os.listdir("."):
         if f.lower().endswith(".xlk"):
             try:
-                if zipfile.is_zipfile(f):
-                    temp_p = "plantilla_temporal_convertida.xlsx"
-                    shutil.copyfile(f, temp_p)
-                    wb = openpyxl.load_workbook(temp_p)
-                    return wb, "TEMPLATE"
+                temp_xlsx = "Pedimentos_Generales_temp.xlsx"
+                shutil.copyfile(f, temp_xlsx)
+                return openpyxl.load_workbook(temp_xlsx), "TEMPLATE"
             except Exception:
                 pass
 
@@ -84,51 +81,53 @@ def cargar_o_crear_plantilla_oficial():
 
 def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departamento de Servicios Generales B", nombre_jefatura="Jenier Camacho Picado", hash_firma="", consecutivo_forzado=None):
     os.makedirs("pedimentos_generados", exist_ok=True)
-
+    
     if consecutivo_forzado:
         consecutivo = str(consecutivo_forzado).strip()
     else:
         consecutivo = obtener_siguiente_consecutivo()
-
+        
     fecha_actual = datetime.now()
-
-    # Obtener artículos de la base de datos
+    
+    # Extraer las solicitudes de la base de datos
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
-    placeholders = ",".join("?" * len(ids_solicitudes))
+    placeholders = ",".join("?" * len(solicitud_ids))
     cursor.execute(f"""
         SELECT s.id, a.codigo_grupal, a.descripcion, s.cantidad, f.nombre, f.espacio_asignado
         FROM solicitudes s
         JOIN articulos a ON s.articulo_id = a.codigo_grupal
         JOIN funcionarios f ON s.funcionario_id = f.id
         WHERE s.id IN ({placeholders})
-    """, ids_solicitudes)
+    """, solicitud_ids)
     items = cursor.fetchall()
     conn.close()
 
-    wb, modo = cargar_o_crear_plantilla_oficial()
+    wb, tipo_carga = cargar_plantilla_segura()
 
-    if modo == "TEMPLATE":
-        # Usar la hoja de la plantilla institucional existente
+    if tipo_carga == "TEMPLATE":
+        # Formato utilizando la plantilla oficial de tu repositorio
         ws = wb['Pedimento'] if 'Pedimento' in wb.sheetnames else wb.active
+        
         ws['N8'] = consecutivo
         ws['N7'] = fecha_actual.strftime("%d/%m/%Y")
         ws['D8'] = nombre_departamento
-
+        
         fila_inicio = 12
-        for idx, sol_id in enumerate(solicitud_ids):
-            if fila_inicio + idx > 37:
+        for idx in range(26):  # Rango oficial de filas 12 a 37
+            fila_actual = fila_inicio + idx
+            if fila_actual > 37:
                 break
+                
             if idx < len(items):
                 _, codigo_grupal, descripcion, cantidad, _, _ = items[idx]
                 codigo_grupal = str(codigo_grupal).strip()
                 
                 partida = codigo_grupal[:5] if len(codigo_grupal) >= 5 else codigo_grupal
-                sub_partida = codigo_grupal[5:10] if len(codigo_grupal) >= 10 else ""
-                codigo = codigo_grupal[10:16] if len(codigo_grupal) >= 16 else ""
+                sub_partida = codigo_grupal if len(codigo_grupal) >= 10 else ""
+                codigo = codigo_grupal if len(codigo_grupal) >= 16 else ""
                 sub_codigo = codigo_grupal[16:] if len(codigo_grupal) > 16 else "0"
-
-                fila_actual = fila_inicio + idx
+                
                 ws.cell(row=fila_actual, column=1, value=partida)
                 ws.cell(row=fila_actual, column=2, value=sub_partida)
                 ws.cell(row=fila_actual, column=3, value=codigo)
@@ -136,12 +135,28 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
                 ws.cell(row=fila_actual, column=5, value=descripcion)
                 ws.cell(row=fila_actual, column=14, value=int(cantidad))
                 ws.cell(row=fila_actual, column=15, value=int(cantidad))
+            elif idx == len(items):
+                ws.cell(row=fila_actual, column=1, value="")
+                ws.cell(row=fila_actual, column=2, value="")
+                ws.cell(row=fila_actual, column=3, value="")
+                ws.cell(row=fila_actual, column=4, value="")
+                ws.cell(row=fila_actual, column=5, value="****** UL ******")
+                ws.cell(row=fila_actual, column=14, value="")
+                ws.cell(row=fila_actual, column=15, value="")
+            else:
+                ws.cell(row=fila_actual, column=1, value="")
+                ws.cell(row=fila_actual, column=2, value="")
+                ws.cell(row=fila_actual, column=3, value="")
+                ws.cell(row=fila_actual, column=4, value="")
+                ws.cell(row=fila_actual, column=5, value=".")
+                ws.cell(row=fila_actual, column=14, value="")
+                ws.cell(row=fila_actual, column=15, value="")
 
         ws['A46'] = f"Aprobado digitalmente por: {nombre_jefatura}"
         ws['A47'] = f"Hash de Firma: {hash_firma[:16]}... | Fecha: {fecha_actual.strftime('%Y-%m-%d %H:%M')}"
 
     else:
-        # Generar formato oficial de DINADECO reglamentario en limpio
+        # Formato reglamentario en memoria (contingencia institucional exacta)
         ws = wb.active
         ws.title = "Pedimento"
         ws.views.sheetView[0].showGridLines = True
@@ -171,7 +186,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         ws.column_dimensions['F'].width = 6.5
         ws.column_dimensions['G'].width = 6.5
 
-        # Encabezado institucional
+        # Encabezado
         ws.merge_cells("A1:C2")
         ws["A1"] = "DIRECCIÓN NACIONAL\nDE DESARROLLO DE\nLA COMUNIDAD"
         ws["A1"].font = font_org
@@ -216,7 +231,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         ws["G5"].font = Font(name="Arial", size=9, bold=True)
         ws["G5"].alignment = align_center
 
-        # Encabezados de tabla
+        # Tabla de artículos
         ws.merge_cells("A6:A7")
         ws["A6"] = "Partida"
         ws.merge_cells("B6:B7")
@@ -239,7 +254,6 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
                 cell.alignment = align_center
                 cell.border = border_cell
 
-        # Filas de insumos
         total_filas = 20
         num_items = len(items)
         for i in range(total_filas):
@@ -252,9 +266,9 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
                 cant = int(it[3])
 
                 ws[f"A{row}"] = cod_g[:5] if len(cod_g) >= 5 else "29905"
-                ws[f"B{row}"] = str(int(cod_g[5:10])) if len(cod_g) >= 10 and cod_g[5:10].isdigit() else (cod_g[5:10] if len(cod_g) >= 10 else "1050")
-                ws[f"C{row}"] = str(int(cod_g[10:16])) if len(cod_g) >= 16 and cod_g[10:16].isdigit() else (cod_g[10:16] if len(cod_g) >= 16 else cod_g)
-                ws[f"D{row}"] = str(int(cod_g[16:18])) if len(cod_g) >= 18 and cod_g[16:18].isdigit() else "0"
+                ws[f"B{row}"] = str(int(cod_g)) if len(cod_g) >= 10 and cod_g.isdigit() else (cod_g if len(cod_g) >= 10 else "1050")
+                ws[f"C{row}"] = str(int(cod_g)) if len(cod_g) >= 16 and cod_g.isdigit() else (cod_g if len(cod_g) >= 16 else cod_g)
+                ws[f"D{row}"] = str(int(cod_g)) if len(cod_g) >= 18 and cod_g.isdigit() else "0"
                 ws[f"E{row}"] = desc
                 ws[f"F{row}"] = cant
                 ws[f"G{row}"] = ""
@@ -294,7 +308,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         ws["A28"].border = border_cell
         ws.row_dimensions[28].height = 13
 
-        # Cuadros de firmas y sellos oficiales
+        # Cuadros de firmas y sellos
         ws.merge_cells("A29:B32")
         ws["A29"] = "Poner sello aquí"
         ws["A29"].font = Font(name="Arial", size=7, italic=True)
@@ -351,7 +365,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         ws["E36"].font = font_small
         ws["E36"].alignment = align_right
 
-    # Configuración de página Carta (1 sola página exacta)
+    # Configuración estricta de página Carta (1 sola página exacta sin desbordes)
     try:
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
         ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
