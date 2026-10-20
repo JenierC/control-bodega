@@ -1,33 +1,14 @@
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
 import sqlite3
 from datetime import datetime
 import os
 
-def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento de Servicios Generales", estado_firma="Pendiente de Firma", hash_transaccion="", consecutivo_forzado=None):
+def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento de Servicios Generales B", estado_firma="Pendiente de Firma", hash_transaccion="", consecutivo_forzado=None):
     os.makedirs("pedimentos_generados", exist_ok=True)
     
-    # 1. Obtener consecutivo (usar el forzado para regenerar o incrementar en pedidos nuevos)
+    # 1. Consecutivo oficial
     anio_actual = datetime.now().year
-    
-    if consecutivo_forzado:
-        consecutivo = str(consecutivo_forzado).strip()
-    else:
-        conn = sqlite3.connect("database.db")
-        cursor = conn.cursor()import openpyxl
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from openpyxl.utils import get_column_letter
-import sqlite3
-from datetime import datetime
-import os
-
-def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento de Servicios Generales", estado_firma="Pendiente de Firma", hash_transaccion="", consecutivo_forzado=None):
-    os.makedirs("pedimentos_generados", exist_ok=True)
-    
-    # 1. Obtener consecutivo (usar el forzado para regenerar o incrementar en pedidos nuevos)
-    anio_actual = datetime.now().year
-    
     if consecutivo_forzado:
         consecutivo = str(consecutivo_forzado).strip()
     else:
@@ -48,7 +29,7 @@ def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento d
         conn.close()
         consecutivo = f"{nuevo_num:03d}-{anio_actual}"
     
-    # 2. Obtener datos de las solicitudes
+    # 2. Extracción de solicitudes
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     placeholders = ",".join("?" * len(ids_solicitudes))
@@ -60,104 +41,117 @@ def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento d
         WHERE s.id IN ({placeholders})
     """, ids_solicitudes)
     items = cursor.fetchall()
-    
-    solicitante = items[0][4] if items else "Funcionario"
-    espacio = items[0][5] if items else "General"
     conn.close()
 
-    # 3. Crear Libro de Excel
+    # 3. Construcción del Libro Excel con plantilla formal Ver 2.01.2021
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = f"Pedimento_{consecutivo}"
+    ws.title = "Pedimento"
     ws.views.sheetView[0].showGridLines = True
 
-    # Estilos oficiales
-    font_titulo = Font(name="Calibri", size=11, bold=True, color="002060")
-    font_subtitulo = Font(name="Calibri", size=9, bold=True, color="333333")
-    font_header = Font(name="Calibri", size=9, bold=True, color="FFFFFF")
-    font_data = Font(name="Calibri", size=8.5)
-    font_small = Font(name="Calibri", size=7.5, italic=True)
-    font_bold = Font(name="Calibri", size=8.5, bold=True)
+    # Tipografías oficiales sobrias
+    font_titulo = Font(name="Arial", size=13, bold=True)
+    font_sub = Font(name="Arial", size=8.5, bold=True)
+    font_label = Font(name="Arial", size=8)
+    font_table_hdr = Font(name="Arial", size=8, bold=True)
+    font_item = Font(name="Arial", size=7.5)
+    font_item_qty = Font(name="Arial", size=8.5, bold=True)
+    font_small = Font(name="Arial", size=6.5)
 
-    fill_header = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    fill_sub = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-
-    thin = Side(border_style="thin", color="808080")
-    border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
+    thin = Side(border_style="thin", color="000000")
+    border_box = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
     align_right = Alignment(horizontal="right", vertical="center")
 
-    # Anchos de columna optimizados para 1 página Carta
-    anchos = {
-        'A': 10,   # Partida
-        'B': 11,   # Subpartida
-        'C': 11,   # Código
-        'D': 9,    # Subcódigo
-        'E': 44,   # Descripción de artículo
-        'F': 9,    # Solic.
-        'G': 9     # Desp.
-    }
-    for col, width in anchos.items():
-        ws.column_dimensions[col].width = width
+    # Anchos de columna oficiales
+    ws.column_dimensions['A'].width = 8.5   # Partida
+    ws.column_dimensions['B'].width = 8.5   # Sub-partida
+    ws.column_dimensions['C'].width = 9.0   # Código
+    ws.column_dimensions['D'].width = 8.5   # Sub-código
+    ws.column_dimensions['E'].width = 46.0  # Descripción de artículo
+    ws.column_dimensions['F'].width = 6.5   # Solic.
+    ws.column_dimensions['G'].width = 6.5   # Desp.
 
-    # ENCABEZADO OFICIAL
-    ws.merge_cells("A1:G1")
-    ws["A1"] = "DIRECCIÓN NACIONAL DE DESARROLLO DE LA COMUNIDAD"
-    ws["A1"].font = font_titulo
-    ws["A1"].alignment = align_center
+    # -------------------------------------------------------------
+    # ENCABEZADO INSTITUCIONAL OFICIAL
+    # -------------------------------------------------------------
+    ws.merge_cells("A1:C2")
+    ws["A1"] = "DIRECCIÓN NACIONAL\nDE DESARROLLO DE LA COMUNIDAD\nGOBIERNO DE COSTA RICA"
+    ws["A1"].font = Font(name="Arial", size=7.5, bold=True)
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-    ws.merge_cells("A2:G2")
-    ws["A2"] = "DEPARTAMENTO DE BIENES Y SUMINISTROS — BODEGA INSTITUCIONAL"
-    ws["A2"].font = font_subtitulo
-    ws["A2"].alignment = align_center
+    ws.merge_cells("D1:G1")
+    ws["D1"] = "Pedimento de materiales y suministros"
+    ws["D1"].font = font_titulo
+    ws["D1"].alignment = align_right
 
-    ws.merge_cells("A3:E3")
-    ws["A3"] = f"Pedimento de Materiales y Suministros: {departamento}"
-    ws["A3"].font = font_bold
-    ws["A3"].alignment = align_left
+    ws.merge_cells("D2:G2")
+    ws["D2"] = f"DSG-{consecutivo}"
+    ws["D2"].font = Font(name="Arial", size=9, bold=True)
+    ws["D2"].alignment = align_right
 
-    ws.merge_cells("F3:G3")
-    ws["F3"] = f"Pedimento N°: {consecutivo}"
-    ws["F3"].font = Font(name="Calibri", size=10, bold=True, color="C00000")
-    ws["F3"].alignment = align_center
+    ws["A3"] = "Departamento/Región:"
+    ws["A3"].font = font_sub
+    ws.merge_cells("B3:D3")
+    ws["B3"] = departamento
+    ws["B3"].font = font_label
 
-    ws.merge_cells("A4:E4")
-    ws["A4"] = f"Solicitante: {solicitante}  |  Espacio: {espacio}"
-    ws["A4"].font = font_data
-    ws["A4"].alignment = align_left
+    ws["E3"] = "Inic. DSG"
+    ws["E3"].font = font_sub
+    ws["E3"].alignment = align_right
 
-    ws.merge_cells("F4:G4")
-    ws["F4"] = f"Fecha: {datetime.now().strftime('%d/%m/%Y')}"
-    ws["F4"].font = font_data
-    ws["F4"].alignment = align_center
+    ws["F3"] = "Fecha pedido:"
+    ws["F3"].font = font_sub
+    ws["G3"] = datetime.now().strftime("%d/%m/%Y")
+    ws["G3"].font = font_label
+    ws["G3"].alignment = align_center
 
-    # TABLA DE PRODUCTOS (Fila 6)
-    headers = [
-        ("A6", "Partida"),
-        ("B6", "Subpartida"),
-        ("C6", "Código"),
-        ("D6", "Subcódigo"),
-        ("E6", "Descripción de Artículo"),
-        ("F6", "Solic."),
-        ("G6", "Desp.")
-    ]
-    for cell_ref, text in headers:
-        ws[cell_ref] = text
-        ws[cell_ref].font = font_header
-        ws[cell_ref].fill = fill_header
-        ws[cell_ref].alignment = align_center
-        ws[cell_ref].border = border_cell
-    ws.row_dimensions[6].height = 20
+    ws["F4"] = "Consecutivo:"
+    ws["F4"].font = font_sub
+    ws["G4"] = consecutivo
+    ws["G4"].font = Font(name="Arial", size=9, bold=True)
+    ws["G4"].alignment = align_center
 
-    # Llenado de ítems (filas 7 a 16 -> 10 renglones exactos)
-    for idx in range(10):
-        row_num = 7 + idx
-        ws.row_dimensions[row_num].height = 18
+    # -------------------------------------------------------------
+    # TABLA FORMAL DE ARTÍCULOS (Filas 5 y 6)
+    # -------------------------------------------------------------
+    ws.merge_cells("A5:A6")
+    ws["A5"] = "Partida"
+    ws.merge_cells("B5:B6")
+    ws["B5"] = "Sub-\npartida"
+    ws.merge_cells("C5:C6")
+    ws["C5"] = "Código"
+    ws.merge_cells("D5:D6")
+    ws["D5"] = "Sub-\ncódigo"
+    ws.merge_cells("E5:E6")
+    ws["E5"] = "Descripción de artículo"
+    
+    ws.merge_cells("F5:G5")
+    ws["F5"] = "Cantidad"
+    ws["F6"] = "Solic."
+    ws["G6"] = "Desp."
 
-        if idx < len(items):
-            it = items[idx]
+    for r in range(5, 7):
+        for c in ["A", "B", "C", "D", "E", "F", "G"]:
+            cell = ws[f"{c}{r}"]
+            cell.font = font_table_hdr
+            cell.alignment = align_center
+            cell.border = border_box
+
+    # -------------------------------------------------------------
+    # CUERPO DE INSUMOS (20 Renglones Oficiales: Filas 7 a 26)
+    # -------------------------------------------------------------
+    total_filas_tabla = 20
+    num_items = len(items)
+
+    for i in range(total_filas_tabla):
+        row = 7 + i
+        ws.row_dimensions[row].height = 14
+
+        if i < num_items:
+            it = items[i]
             cod_g = str(it[1]).strip()
             desc = str(it[2]).strip()
             cant = int(it[3])
@@ -167,96 +161,134 @@ def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento d
             codigo = cod_g[10:16] if len(cod_g) >= 16 else cod_g
             subcodigo = cod_g[16:18] if len(cod_g) >= 18 else "00"
 
-            ws[f"A{row_num}"] = partida
-            ws[f"B{row_num}"] = subpartida
-            ws[f"C{row_num}"] = codigo
-            ws[f"D{row_num}"] = subcodigo
-            ws[f"E{row_num}"] = desc
-            ws[f"F{row_num}"] = cant
-            ws[f"G{row_num}"] = ""
+            ws[f"A{row}"] = partida
+            ws[f"B{row}"] = subpartida
+            ws[f"C{row}"] = codigo
+            ws[f"D{row}"] = subcodigo
+            ws[f"E{row}"] = desc
+            ws[f"F{row}"] = cant
+            ws[f"G{row}"] = ""
+        elif i == num_items:
+            # Marca de fin de lista reglamentaria
+            ws[f"A{row}"] = ""
+            ws[f"B{row}"] = ""
+            ws[f"C{row}"] = ""
+            ws[f"D{row}"] = ""
+            ws[f"E{row}"] = "***** UL *****"
+            ws[f"F{row}"] = ""
+            ws[f"G{row}"] = ""
         else:
-            ws[f"A{row_num}"] = ""
-            ws[f"B{row_num}"] = ""
-            ws[f"C{row_num}"] = ""
-            ws[f"D{row_num}"] = ""
-            ws[f"E{row_num}"] = ""
-            ws[f"F{row_num}"] = ""
-            ws[f"G{row_num}"] = ""
+            # Puntos en líneas vacías oficiales
+            ws[f"A{row}"] = ""
+            ws[f"B{row}"] = ""
+            ws[f"C{row}"] = ""
+            ws[f"D{row}"] = ""
+            ws[f"E{row}"] = "."
+            ws[f"F{row}"] = ""
+            ws[f"G{row}"] = ""
 
-        ws[f"A{row_num}"].alignment = align_center
-        ws[f"B{row_num}"].alignment = align_center
-        ws[f"C{row_num}"].alignment = align_center
-        ws[f"D{row_num}"].alignment = align_center
-        ws[f"E{row_num}"].alignment = align_left
-        ws[f"F{row_num}"].alignment = align_center
-        ws[f"G{row_num}"].alignment = align_center
+        ws[f"A{row}"].alignment = align_center
+        ws[f"B{row}"].alignment = align_center
+        ws[f"C{row}"].alignment = align_center
+        ws[f"D{row}"].alignment = align_center
+        ws[f"E{row}"].alignment = align_left
+        ws[f"F{row}"].alignment = align_center
+        ws[f"G{row}"].alignment = align_center
 
-        for col_letter in ["A", "B", "C", "D", "E", "F", "G"]:
-            ws[f"{col_letter}{row_num}"].font = font_data
-            ws[f"{col_letter}{row_num}"].border = border_cell
+        for col in ["A", "B", "C", "D", "E", "F", "G"]:
+            ws[f"{col}{row}"].font = font_item_qty if col == "F" else font_item
+            ws[f"{col}{row}"].border = border_box
 
-    # SECCIÓN INFERIOR: SELLOS Y FIRMAS (Filas 18 a 26)
-    ws.row_dimensions[17].height = 6
+    # Fila de separación
+    ws.merge_cells("A27:G27")
+    ws["A27"] = "Productos no registrados"
+    ws["A27"].font = Font(name="Arial", size=8, italic=True)
+    ws["A27"].alignment = align_center
+    ws["A27"].border = border_box
+    ws.row_dimensions[27].height = 13
 
-    # Bloque 1: Firma Jefatura
-    ws.merge_cells("A18:D18")
-    ws["A18"] = "AUTORIZACIÓN DE JEFATURA"
-    ws["A18"].font = font_subtitulo
-    ws["A18"].fill = fill_sub
-    ws["A18"].alignment = align_center
-    ws["A18"].border = border_cell
+    # -------------------------------------------------------------
+    # LOS 4 CUADROS DE SELLOS Y FIRMAS OFICIALES (Filas 28 a 34)
+    # -------------------------------------------------------------
+    # Cuadro 1: Jefatura Solicitante
+    ws.merge_cells("A28:B31")
+    ws["A28"] = "Poner sello aquí"
+    ws["A28"].font = Font(name="Arial", size=7, italic=True)
+    ws["A28"].alignment = align_center
 
-    ws.merge_cells("A19:D22")
-    ws["A19"] = f"Estado: {estado_firma}\nJenier Camacho Picado\nNombre y firma jefe departamento"
-    ws["A19"].font = font_data
-    ws["A19"].alignment = align_center
-    ws["A19"].border = border_cell
+    ws.merge_cells("A32:B32")
+    ws["A32"] = "Jenier Camacho Picado"
+    ws["A32"].font = Font(name="Arial", size=8, bold=True)
+    ws["A32"].alignment = align_center
 
-    # Bloque 2: Sellos de Bodega
-    ws.merge_cells("E18:G18")
-    ws["E18"] = "CONTROL Y RECEPCIÓN DE BODEGA"
-    ws["E18"].font = font_subtitulo
-    ws["E18"].fill = fill_sub
-    ws["E18"].alignment = align_center
-    ws["E18"].border = border_cell
+    ws.merge_cells("A33:B34")
+    ws["A33"] = "Nombre y firma jefe departamento"
+    ws["A33"].font = Font(name="Arial", size=7, bold=True)
+    ws["A33"].alignment = Alignment(horizontal="center", vertical="top")
 
-    ws.merge_cells("E19:G22")
-    ws["E19"] = "Espacio para sellos físicos:\nMERCADERÍA DESPACHADA / RETIRADA\nFirma y Fecha de Entrega"
-    ws["E19"].font = font_small
-    ws["E19"].alignment = align_center
-    ws["E19"].border = border_cell
+    # Cuadro 2: Recibido Conforme
+    ws.merge_cells("C28:D32")
+    ws["C28"] = ""
+    ws.merge_cells("C33:D34")
+    ws["C33"] = "Nombre de quién recibe conforme"
+    ws["C33"].font = Font(name="Arial", size=7, bold=True)
+    ws["C33"].alignment = Alignment(horizontal="center", vertical="top")
 
-    # Pie institucional normativo
-    ws.merge_cells("A24:D24")
-    ws["A24"] = "Original: Control de Bodega | Copia: Solicitante"
-    ws["A24"].font = font_small
-    ws["A24"].alignment = align_left
+    # Cuadro 3: Entrega de Bodega
+    ws.merge_cells("E28:E32")
+    ws["E28"] = "Sello y Fecha"
+    ws["E28"].font = Font(name="Arial", size=7, italic=True)
+    ws["E28"].alignment = align_center
 
-    ws.merge_cells("E24:G24")
-    ws["E24"] = f"Seguridad BCCR: {hash_transaccion[:16]}..." if hash_transaccion else "Validación Digital DINADECO"
-    ws["E24"].font = font_small
-    ws["E24"].alignment = align_right
+    ws.merge_cells("E33:E34")
+    ws["E33"] = "Encargado de entrega"
+    ws["E33"].font = Font(name="Arial", size=7, bold=True)
+    ws["E33"].alignment = Alignment(horizontal="center", vertical="top")
 
-    # ===============================================================
-    # CONFIGURACIÓN ESTRICTA DE PÁGINA (1 SOLA PÁGINA EXACTA)
-    # ===============================================================
+    # Cuadro 4: Seguridad (Regional)
+    ws.merge_cells("F28:G32")
+    ws["F28"] = ""
+    ws.merge_cells("F33:G34")
+    ws["F33"] = "Nombre del oficial de seguridad\nOficial de seguridad (En caso de regional)"
+    ws["F33"].font = Font(name="Arial", size=6.5, bold=True)
+    ws["F33"].alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
+
+    # Bordes en los cuadros inferiores
+    for r in range(28, 35):
+        for col in ["A", "B", "C", "D", "E", "F", "G"]:
+            ws[f"{col}{r}"].border = border_box
+
+    # -------------------------------------------------------------
+    # PIE DE PÁGINA NORMATIVO OFICIAL
+    # -------------------------------------------------------------
+    ws.merge_cells("A35:D35")
+    ws["A35"] = "Original: Control de bodega.  Ver 2.01.2021"
+    ws["A35"].font = font_small
+    ws["A35"].alignment = align_left
+
+    ws.merge_cells("E35:G35")
+    ws["E35"] = "COPIA: departamento solicitante"
+    ws["E35"].font = font_small
+    ws["E35"].alignment = align_right
+
+    # =============================================================
+    # CONFIGURACIÓN DE IMPRESIÓN (1 PÁGINA CARTA EXACTA)
+    # =============================================================
     ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
     ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
 
-    # Forzar a 1 sola página exacta de alto y ancho
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
 
-    # Márgenes compactos
-    ws.page_margins.top = 0.35
-    ws.page_margins.bottom = 0.35
-    ws.page_margins.left = 0.4
-    ws.page_margins.right = 0.4
+    ws.page_margins.top = 0.3
+    ws.page_margins.bottom = 0.3
+    ws.page_margins.left = 0.35
+    ws.page_margins.right = 0.35
     ws.page_margins.header = 0.0
     ws.page_margins.footer = 0.0
 
-    # Eliminar completamente el pie de página predeterminado de Excel
+    # Quitar cualquier encabezado o pie automático de Excel
     ws.oddHeader.left.text = ""
     ws.oddHeader.center.text = ""
     ws.oddHeader.right.text = ""
@@ -270,255 +302,8 @@ def generar_formulario_oficial_bys(ids_solicitudes, departamento="Departamento d
     ws.evenFooter.center.text = ""
     ws.evenFooter.right.text = ""
 
-    # Área de impresión delimitada (Filas 1 a 24)
-    ws.print_area = "A1:G24"
+    ws.print_area = "A1:G35"
 
-    # 4. Guardar archivo
-    ruta_excel = os.path.join("pedimentos_generados", f"Pedimento_{consecutivo}.xlsx")
-    wb.save(ruta_excel)
-    return consecutivo, ruta_excel
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS control_consecutivos (
-                anio INTEGER PRIMARY KEY,
-                ultimo_numero INTEGER NOT NULL
-            )
-        """)
-        cursor.execute("SELECT ultimo_numero FROM control_consecutivos WHERE anio = ?", (anio_actual,))
-        row = cursor.fetchone()
-        ultimo_num = row[0] if row else 50
-        nuevo_num = ultimo_num + 1
-        cursor.execute("INSERT OR REPLACE INTO control_consecutivos (anio, ultimo_numero) VALUES (?, ?)", (anio_actual, nuevo_num))
-        conn.commit()
-        conn.close()
-        consecutivo = f"{nuevo_num:03d}-{anio_actual}"
-    
-    # 2. Obtener datos de las solicitudes
-    conn = sqlite3.connect("database.db")
-    cursor = conn.cursor()
-    placeholders = ",".join("?" * len(ids_solicitudes))
-    cursor.execute(f"""
-        SELECT s.id, a.codigo_grupal, a.descripcion, s.cantidad, f.nombre, f.espacio_asignado
-        FROM solicitudes s
-        JOIN articulos a ON s.articulo_id = a.codigo_grupal
-        JOIN funcionarios f ON s.funcionario_id = f.id
-        WHERE s.id IN ({placeholders})
-    """, ids_solicitudes)
-    items = cursor.fetchall()
-    
-    solicitante = items[0][4] if items else "Funcionario"
-    espacio = items[0][5] if items else "General"
-    conn.close()
-
-    # 3. Crear Libro de Excel
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = f"Pedimento_{consecutivo}"
-    ws.views.sheetView[0].showGridLines = True
-
-    # Estilos oficiales
-    font_titulo = Font(name="Calibri", size=11, bold=True, color="002060")
-    font_subtitulo = Font(name="Calibri", size=9, bold=True, color="333333")
-    font_header = Font(name="Calibri", size=9, bold=True, color="FFFFFF")
-    font_data = Font(name="Calibri", size=8.5)
-    font_small = Font(name="Calibri", size=7.5, italic=True)
-    font_bold = Font(name="Calibri", size=8.5, bold=True)
-
-    fill_header = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    fill_sub = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-
-    thin = Side(border_style="thin", color="808080")
-    border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    align_left = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    align_right = Alignment(horizontal="right", vertical="center")
-
-    # Anchos de columna optimizados para 1 página Carta
-    anchos = {
-        'A': 10,   # Partida
-        'B': 11,   # Subpartida
-        'C': 11,   # Código
-        'D': 9,    # Subcódigo
-        'E': 44,   # Descripción de artículo
-        'F': 9,    # Solic.
-        'G': 9     # Desp.
-    }
-    for col, width in anchos.items():
-        ws.column_dimensions[col].width = width
-
-    # ENCABEZADO OFICIAL
-    ws.merge_cells("A1:G1")
-    ws["A1"] = "DIRECCIÓN NACIONAL DE DESARROLLO DE LA COMUNIDAD"
-    ws["A1"].font = font_titulo
-    ws["A1"].alignment = align_center
-
-    ws.merge_cells("A2:G2")
-    ws["A2"] = "DEPARTAMENTO DE BIENES Y SUMINISTROS — BODEGA INSTITUCIONAL"
-    ws["A2"].font = font_subtitulo
-    ws["A2"].alignment = align_center
-
-    ws.merge_cells("A3:E3")
-    ws["A3"] = f"Pedimento de Materiales y Suministros: {departamento}"
-    ws["A3"].font = font_bold
-    ws["A3"].alignment = align_left
-
-    ws.merge_cells("F3:G3")
-    ws["F3"] = f"Pedimento N°: {consecutivo}"
-    ws["F3"].font = Font(name="Calibri", size=10, bold=True, color="C00000")
-    ws["F3"].alignment = align_center
-
-    ws.merge_cells("A4:E4")
-    ws["A4"] = f"Solicitante: {solicitante}  |  Espacio: {espacio}"
-    ws["A4"].font = font_data
-    ws["A4"].alignment = align_left
-
-    ws.merge_cells("F4:G4")
-    ws["F4"] = f"Fecha: {datetime.now().strftime('%d/%m/%Y')}"
-    ws["F4"].font = font_data
-    ws["F4"].alignment = align_center
-
-    # TABLA DE PRODUCTOS (Fila 6)
-    headers = [
-        ("A6", "Partida"),
-        ("B6", "Subpartida"),
-        ("C6", "Código"),
-        ("D6", "Subcódigo"),
-        ("E6", "Descripción de Artículo"),
-        ("F6", "Solic."),
-        ("G6", "Desp.")
-    ]
-    for cell_ref, text in headers:
-        ws[cell_ref] = text
-        ws[cell_ref].font = font_header
-        ws[cell_ref].fill = fill_header
-        ws[cell_ref].alignment = align_center
-        ws[cell_ref].border = border_cell
-    ws.row_dimensions[6].height = 20
-
-    # Llenado de ítems (filas 7 a 16 -> 10 renglones exactos)
-    for idx in range(10):
-        row_num = 7 + idx
-        ws.row_dimensions[row_num].height = 18
-
-        if idx < len(items):
-            it = items[idx]
-            cod_g = str(it[1]).strip()
-            desc = str(it[2]).strip()
-            cant = int(it[3])
-
-            partida = cod_g[:5] if len(cod_g) >= 5 else "29905"
-            subpartida = cod_g[5:10] if len(cod_g) >= 10 else "01900"
-            codigo = cod_g[10:16] if len(cod_g) >= 16 else cod_g
-            subcodigo = cod_g[16:18] if len(cod_g) >= 18 else "00"
-
-            ws[f"A{row_num}"] = partida
-            ws[f"B{row_num}"] = subpartida
-            ws[f"C{row_num}"] = codigo
-            ws[f"D{row_num}"] = subcodigo
-            ws[f"E{row_num}"] = desc
-            ws[f"F{row_num}"] = cant
-            ws[f"G{row_num}"] = ""
-        else:
-            ws[f"A{row_num}"] = ""
-            ws[f"B{row_num}"] = ""
-            ws[f"C{row_num}"] = ""
-            ws[f"D{row_num}"] = ""
-            ws[f"E{row_num}"] = ""
-            ws[f"F{row_num}"] = ""
-            ws[f"G{row_num}"] = ""
-
-        ws[f"A{row_num}"].alignment = align_center
-        ws[f"B{row_num}"].alignment = align_center
-        ws[f"C{row_num}"].alignment = align_center
-        ws[f"D{row_num}"].alignment = align_center
-        ws[f"E{row_num}"].alignment = align_left
-        ws[f"F{row_num}"].alignment = align_center
-        ws[f"G{row_num}"].alignment = align_center
-
-        for col_letter in ["A", "B", "C", "D", "E", "F", "G"]:
-            ws[f"{col_letter}{row_num}"].font = font_data
-            ws[f"{col_letter}{row_num}"].border = border_cell
-
-    # SECCIÓN INFERIOR: SELLOS Y FIRMAS (Filas 18 a 26)
-    ws.row_dimensions[17].height = 6
-
-    # Bloque 1: Firma Jefatura
-    ws.merge_cells("A18:D18")
-    ws["A18"] = "AUTORIZACIÓN DE JEFATURA"
-    ws["A18"].font = font_subtitulo
-    ws["A18"].fill = fill_sub
-    ws["A18"].alignment = align_center
-    ws["A18"].border = border_cell
-
-    ws.merge_cells("A19:D22")
-    ws["A19"] = f"Estado: {estado_firma}\nJenier Camacho Picado\nNombre y firma jefe departamento"
-    ws["A19"].font = font_data
-    ws["A19"].alignment = align_center
-    ws["A19"].border = border_cell
-
-    # Bloque 2: Sellos de Bodega
-    ws.merge_cells("E18:G18")
-    ws["E18"] = "CONTROL Y RECEPCIÓN DE BODEGA"
-    ws["E18"].font = font_subtitulo
-    ws["E18"].fill = fill_sub
-    ws["E18"].alignment = align_center
-    ws["E18"].border = border_cell
-
-    ws.merge_cells("E19:G22")
-    ws["E19"] = "Espacio para sellos físicos:\nMERCADERÍA DESPACHADA / RETIRADA\nFirma y Fecha de Entrega"
-    ws["E19"].font = font_small
-    ws["E19"].alignment = align_center
-    ws["E19"].border = border_cell
-
-    # Pie institucional normativo
-    ws.merge_cells("A24:D24")
-    ws["A24"] = "Original: Control de Bodega | Copia: Solicitante"
-    ws["A24"].font = font_small
-    ws["A24"].alignment = align_left
-
-    ws.merge_cells("E24:G24")
-    ws["E24"] = f"Seguridad BCCR: {hash_transaccion[:16]}..." if hash_transaccion else "Validación Digital DINADECO"
-    ws["E24"].font = font_small
-    ws["E24"].alignment = align_right
-
-    # ===============================================================
-    # CONFIGURACIÓN ESTRICTA DE PÁGINA (1 SOLA PÁGINA EXACTA)
-    # ===============================================================
-    ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
-    ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
-
-    # Forzar a 1 sola página exacta de alto y ancho
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 1
-
-    # Márgenes compactos
-    ws.page_margins.top = 0.35
-    ws.page_margins.bottom = 0.35
-    ws.page_margins.left = 0.4
-    ws.page_margins.right = 0.4
-    ws.page_margins.header = 0.0
-    ws.page_margins.footer = 0.0
-
-    # Eliminar completamente el pie de página predeterminado de Excel
-    ws.oddHeader.left.text = ""
-    ws.oddHeader.center.text = ""
-    ws.oddHeader.right.text = ""
-    ws.oddFooter.left.text = ""
-    ws.oddFooter.center.text = ""
-    ws.oddFooter.right.text = ""
-    ws.evenHeader.left.text = ""
-    ws.evenHeader.center.text = ""
-    ws.evenHeader.right.text = ""
-    ws.evenFooter.left.text = ""
-    ws.evenFooter.center.text = ""
-    ws.evenFooter.right.text = ""
-
-    # Área de impresión delimitada (Filas 1 a 24)
-    ws.print_area = "A1:G24"
-
-    # 4. Guardar archivo
     ruta_excel = os.path.join("pedimentos_generados", f"Pedimento_{consecutivo}.xlsx")
     wb.save(ruta_excel)
     return consecutivo, ruta_excel
