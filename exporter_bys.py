@@ -224,4 +224,61 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=14, value=int(cantidad))
             ws.cell(row=fila_actual, column=15, value="")
         elif idx == len(items):
-            ws.cell(row=fila_actual, column=1, value
+            ws.cell(row=fila_actual, column=1, value="")
+            ws.cell(row=fila_actual, column=2, value="")
+            ws.cell(row=fila_actual, column=3, value="")
+            ws.cell(row=fila_actual, column=4, value="")
+            ws.cell(row=fila_actual, column=5, value="***** UL *****")
+            ws.cell(row=fila_actual, column=14, value="")
+            ws.cell(row=fila_actual, column=15, value="")
+        else:
+            ws.cell(row=fila_actual, column=1, value="")
+            ws.cell(row=fila_actual, column=2, value="")
+            ws.cell(row=fila_actual, column=3, value="")
+            ws.cell(row=fila_actual, column=4, value="")
+            ws.cell(row=fila_actual, column=5, value=".")
+            ws.cell(row=fila_actual, column=14, value="")
+            ws.cell(row=fila_actual, column=15, value="")
+
+    # Garantizar a Jenier Camacho Picado en jefatura
+    ws['A46'].value = "Jenier Camacho Picado"
+    for r in range(1, 65):
+        for c in range(1, 18):
+            cell = ws.cell(row=r, column=c)
+            if cell.value is not None:
+                txt = str(cell.value).strip().lower()
+                if "edgar" in txt or "vargas" in txt or "brenes" in txt:
+                    cell.value = "Jenier Camacho Picado"
+
+    # Pie de página oficial intacto (con fecha, nombre .xlsm y hora)
+    fecha_pie_texto = fecha_actual.strftime("%d/%m/%Y")
+    nombre_archivo_pie = f"Pedimentos de Departamento de Servicios Generales B {consecutivo}.xlsm"
+    hora_pie_texto = fecha_actual.strftime("%H:%M")
+
+    for sheet in wb.worksheets:
+        for ftr in [sheet.oddFooter, sheet.evenFooter, sheet.firstFooter]:
+            ftr.left.text = fecha_pie_texto
+            ftr.center.text = nombre_archivo_pie
+            ftr.right.text = hora_pie_texto
+
+    # Configuración de página centrada (X=55.0 original) y tamaño Carta
+    try:
+        ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
+        ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 1
+        ws.page_setup.horizontalCentered = True
+        
+        ws.page_margins.left = 0.75
+        ws.page_margins.right = 0.75
+        ws.page_margins.top = 0.35
+        ws.page_margins.bottom = 0.85
+        ws.page_margins.footer = 0.45
+        ws.page_margins.header = 0.2
+    except Exception:
+        pass
+    
+    nombre_archivo_salida = f"pedimentos_generados/Pedimento_{consecutivo}.xlsx"
+    wb.save(nombre_archivo_salida)
+    return consecutivo, nombre_archivo_salida
