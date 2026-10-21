@@ -129,7 +129,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=2, value="")
             ws.cell(row=fila_actual, column=3, value="")
             ws.cell(row=fila_actual, column=4, value="")
-            ws.cell(row=fila_actual, column=5, value="****** UL ******")
+            ws.cell(row=fila_actual, column=5, value="***** UL *****")
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
         else:
@@ -141,13 +141,8 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
 
-    # ===============================================================
-    # ACTUALIZACIÓN DIRECTA Y FORZADA DE JEFATURA: JENIER CAMACHO PICADO
-    # ===============================================================
-    # 1. Asignación directa en la celda A46 (donde reside el nombre en la plantilla)
+    # Asignar a Jenier Camacho Picado en el recuadro de jefatura
     ws['A46'].value = "Jenier Camacho Picado"
-
-    # 2. Barrido exhaustivo sin límite de max_row (filas 1 a 65, columnas A a Q)
     for r in range(1, 65):
         for c in range(1, 18):
             cell = ws.cell(row=r, column=c)
@@ -157,8 +152,27 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
                     cell.value = "Jenier Camacho Picado"
 
     # ===============================================================
-    # CONFIGURACIÓN DE PÁGINA (PIE DE PÁGINA COMPLETO SIN CORTES)
+    # CONFIGURACIÓN EXACTA DEL PIE DE PÁGINA INSTITUCIONAL
     # ===============================================================
+    fecha_pie = fecha_actual.strftime("%d/%m/%Y")
+    nombre_archivo_pie = f"Pedimentos de Departamento de Servicios Generales B {consecutivo}.xlsm"
+    hora_pie = fecha_actual.strftime("%H:%M")
+
+    # Configuración del pie de página oficial
+    for footer_obj in [ws.oddFooter, ws.evenFooter, ws.firstFooter]:
+        footer_obj.left.text = fecha_pie
+        footer_obj.left.font = "Arial"
+        footer_obj.left.size = 8
+        
+        footer_obj.center.text = nombre_archivo_pie
+        footer_obj.center.font = "Arial"
+        footer_obj.center.size = 8
+        
+        footer_obj.right.text = hora_pie
+        footer_obj.right.font = "Arial"
+        footer_obj.right.size = 8
+
+    # Ajustes de página y márgenes para evitar desbordes y cortes
     try:
         ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
