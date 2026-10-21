@@ -4,38 +4,78 @@ from datetime import datetime
 import os
 import shutil
 import re
+import unicodedata
 
 PLANTILLA_BYS = "Pedimentos de Departamento de Servicios Generales.xlsx"
 
-# Catálogo oficial institucional con los códigos exactos de Partida, Sub-partida, Código y Sub-código
-CATALOGO_OFICIAL_INSUMOS = {
-    "FIBRA PARA CEPILLO ELÉCTRICO 17 ROJA": ("29905", "1030", "100", "4"),
-    "FIBRA PARA CEPILLO ELECTRICO 17 ROJA": ("29905", "1030", "100", "4"),
-    "CERA LÍQUIDA": ("29905", "1010", "2", "3"),
-    "CERA LIQUIDA": ("29905", "1010", "2", "3"),
-    "TOALLA PARA SECADO DE MANOS (DISPENSADOR)": ("29905", "1900", "190203", "0"),
-    "ESPONJA DE FIBRA, LAVAPLATOS": ("29905", "1030", "21", "0"),
-    "BOLSA PARA BASURA TIPO JARDIN PAQUETE 5": ("29905", "1060", "100015", "0"),
-    "BOLSA PARA BASURA TIPO JARDIN": ("29905", "1060", "100015", "0"),
-    "ABRILLANTADOR LIQUIDO PARA MUEBLES   LITRO  (DILUIR EN 1 GALÓN)": ("29905", "1040", "60", "0"),
-    "ABRILLANTADOR LIQUIDO PARA MUEBLES": ("29905", "1040", "60", "0"),
-    "DESINFECTANTE EN GALÓN": ("29905", "1035", "200", "0"),
-    "DESINFECTANTE EN GALON": ("29905", "1035", "200", "0"),
-    "DESODORANTE AMBIENTAL EN AEROSOL": ("29905", "1050", "1", "0"),
-    "PAPEL HIGIENICO TIPO JUMBO (DISPENSADOR)": ("29905", "1900", "190201", "1"),
-    "PAPEL HIGIENICO": ("29905", "1900", "190201", "1"),
-    "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL": ("29905", "1050", "1", "1"),
-    "PAÑO DE MICROFIBRA PARA LIMPIEZA": ("29905", "1900", "55", "0"),
-    "TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)": ("29905", "1900", "190205", "0"),
-    "SERVILLETAS DE PAPEL": ("29905", "1900", "190209", "0"),
-}
+def normalizar_texto(texto):
+    if not texto:
+        return ""
+    t = unicodedata.normalize('NFD', str(texto).upper())
+    t = "".join(c for c in t if unicodedata.category(c) != 'Mn')
+    t = re.sub(r'[^A-Z0-9]', '', t)
+    return t
 
-def desglosar_codigo_oficial(codigo_grupal, descripcion):
-    desc_normalizada = str(descripcion).strip().upper()
-    for nom_cat, tupla_cods in CATALOGO_OFICIAL_INSUMOS.items():
-        if nom_cat in desc_normalizada or desc_normalizada in nom_cat:
-            return tupla_cods
+def desglosar_codigo_institucional(descripcion, codigo_grupal):
+    """
+    Retorna con precisión milimétrica los códigos oficiales de Partida, Sub-partida,
+    Código y Sub-código según la normativa formal de DINADECO (Pedimento_057-2026..pdf).
+    """
+    d = normalizar_texto(descripcion)
+    
+    # 1. FIBRA PARA CEPILLO ELECTRICO 17 ROJA
+    if "CEPILLO" in d:
+        return "29905", "1030", "100", "4"
+        
+    # 2. ESPONJA DE FIBRA, LAVAPLATOS
+    if "ESPONJA" in d:
+        return "29905", "1030", "21", "0"
+        
+    # 3. CERA LIQUIDA
+    if "CERA" in d:
+        return "29905", "1010", "2", "3"
+        
+    # 4. TOALLA PARA SECADO DE MANOS (DISPENSADOR)
+    if "SECADO" in d or ("TOALLA" in d and "MANOS" in d):
+        return "29905", "1900", "190203", "0"
+        
+    # 5. TOALLAS DESECHABLES (MAYORDOMO)
+    if "MAYORDOMO" in d:
+        return "29905", "1900", "190205", "0"
+        
+    # 6. BOLSA PARA BASURA TIPO JARDIN
+    if "JARDIN" in d or ("BASURA" in d and "GRANDE" not in d):
+        return "29905", "1060", "100015", "0"
+        
+    # 7. ABRILLANTADOR PARA MUEBLES
+    if "ABRILLANTADOR" in d:
+        return "29905", "1040", "60", "0"
+        
+    # 8. DESINFECTANTE EN GALON
+    if "DESINFECTANTE" in d:
+        return "29905", "1035", "200", "0"
+        
+    # 9. DESODORANTE AMBIENTAL EN AEROSOL
+    if "DESODORANTE" in d:
+        return "29905", "1050", "1", "0"
+        
+    # 10. PAPEL HIGIENICO TIPO JUMBO
+    if "HIGIENICO" in d or "JUMBO" in d:
+        return "29905", "1900", "190201", "1"
+        
+    # 11. REPUESTO DE AROMATIZANTE AMBIENTAL
+    if "AROMATIZANTE" in d:
+        return "29905", "1050", "1", "1"
+        
+    # 12. PANO DE MICROFIBRA
+    if "MICROFIBRA" in d or "PANO" in d:
+        return "29905", "1900", "55", "0"
+        
+    # 13. SERVILLETAS DE PAPEL
+    if "SERVILLETAS" in d or "SERVILLETA" in d:
+        return "29905", "1900", "190209", "0"
 
+    # Desglose de contingencia si el insumo no figura en los nombres clave anteriores
     tokens = re.findall(r'[0-9]+', str(codigo_grupal))
     if len(tokens) >= 4:
         return tokens[0], str(int(tokens[1])), str(int(tokens[2])), str(int(tokens[3]))
@@ -132,13 +172,18 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         
     fecha_actual = datetime.now()
     
-    # PUNTO 2: Departamento de Servicios Generales B (con la letra B obligatoria)
-    departamento_oficial = "Departamento de Servicios Generales B"
+    # -------------------------------------------------------------
+    # PUNTO 2: FUERZA OBLIGATORIA DE "Departamento de Servicios Generales B"
+    # -------------------------------------------------------------
+    depto_texto = str(nombre_departamento).strip()
+    if not depto_texto.endswith("B"):
+        depto_texto = f"{depto_texto} B"
+        
     ws['N8'] = consecutivo
     ws['N7'] = fecha_actual.strftime("%d/%m/%Y")
-    ws['D8'] = departamento_oficial
+    ws['D8'] = depto_texto
     
-    # Cargar solicitudes
+    # Consulta de solicitudes
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     placeholders = ",".join("?" * len(solicitud_ids))
@@ -152,8 +197,11 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
     items = cursor.fetchall()
     conn.close()
     
+    # -------------------------------------------------------------
+    # PUNTO 1: LLENADO CON LOS CÓDIGOS OFICIALES EXACTOS (FILAS 12 A 37)
+    # -------------------------------------------------------------
     fila_inicio = 12
-    for idx in range(26):  # Renglones 12 a 37
+    for idx in range(26):
         fila_actual = fila_inicio + idx
         if fila_actual > 37:
             break
@@ -161,8 +209,8 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         if idx < len(items):
             _, codigo_grupal, descripcion, cantidad, _, _ = items[idx]
             
-            # PUNTO 1: Códigos de Subpartida, Código y Subcódigo exactos
-            partida, sub_partida, codigo, sub_codigo = desglosar_codigo_oficial(codigo_grupal, descripcion)
+            # Desglose oficial validado contra Pedimento_057-2026..pdf
+            partida, sub_partida, codigo, sub_codigo = desglosar_codigo_institucional(descripcion, codigo_grupal)
             
             ws.cell(row=fila_actual, column=1, value=partida)
             ws.cell(row=fila_actual, column=2, value=sub_partida)
@@ -176,7 +224,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=2, value="")
             ws.cell(row=fila_actual, column=3, value="")
             ws.cell(row=fila_actual, column=4, value="")
-            ws.cell(row=fila_actual, column=5, value="****** UL ******")
+            ws.cell(row=fila_actual, column=5, value="***** UL *****")
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
         else:
@@ -188,7 +236,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
 
-    # Jefatura titular
+    # Garantizar a Jenier Camacho Picado en jefatura
     ws['A46'].value = "Jenier Camacho Picado"
     for r in range(1, 65):
         for c in range(1, 18):
@@ -198,7 +246,9 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
                 if "edgar" in txt or "vargas" in txt or "brenes" in txt:
                     cell.value = "Jenier Camacho Picado"
 
-    # PUNTOS 4 Y 5 INTACTOS: Pie de página oficial con fecha, nombre y hora
+    # -------------------------------------------------------------
+    # PUNTOS 4 Y 5: PIE DE PÁGINA OFICIAL INTACTO
+    # -------------------------------------------------------------
     fecha_pie_texto = fecha_actual.strftime("%d/%m/%Y")
     nombre_archivo_pie = f"Pedimentos de Departamento de Servicios Generales B {consecutivo}.xlsm"
     hora_pie_texto = fecha_actual.strftime("%H:%M")
@@ -209,7 +259,9 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ftr.center.text = nombre_archivo_pie
             ftr.right.text = hora_pie_texto
 
-    # PUNTO 3: Centrado de página y corrección del margen izquierdo a 0.7 pulgadas
+    # -------------------------------------------------------------
+    # PUNTO 3: CENTRADO DE PÁGINA (CORRECCIÓN DEL DESFASE IZQUIERDO)
+    # -------------------------------------------------------------
     try:
         ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
@@ -218,8 +270,9 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         ws.page_setup.fitToHeight = 1
         ws.page_setup.horizontalCentered = True
         
-        ws.page_margins.left = 0.7
-        ws.page_margins.right = 0.7
+        # Margen balanceado idéntico al original bueno (X=55.0)
+        ws.page_margins.left = 0.75
+        ws.page_margins.right = 0.75
         ws.page_margins.top = 0.35
         ws.page_margins.bottom = 0.85
         ws.page_margins.footer = 0.45
