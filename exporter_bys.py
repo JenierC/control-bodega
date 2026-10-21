@@ -74,7 +74,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
     
     wb = cargar_plantilla_segura()
     ws = wb['Pedimento'] if 'Pedimento' in wb.sheetnames else wb.active
-    wb.active = ws  # Asegura que LibreOffice convierta la hoja correcta
+    wb.active = ws
     
     if consecutivo_forzado:
         consecutivo = str(consecutivo_forzado).strip()
@@ -142,25 +142,22 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=15, value="")
 
     # ===============================================================
-    # ACTUALIZACIÓN EXACTA: JENIER CAMACHO PICADO EN LA JEFATURA
+    # ACTUALIZACIÓN DIRECTA Y FORZADA DE JEFATURA: JENIER CAMACHO PICADO
     # ===============================================================
-    nombre_jefe_titular = "Jenier Camacho Picado"
-    
-    for sheet in wb.worksheets:
-        for row in sheet.iter_rows():
-            for cell in row:
-                if cell.value is not None:
-                    txt = str(cell.value).strip()
-                    # 1. Reemplazar cualquier variante del nombre antiguo
-                    if any(k in txt.lower() for k in ["edgar", "vargas", "brenes"]):
-                        cell.value = nombre_jefe_titular
-                    # 2. Asegurar que la celda inmediatamente sobre el cargo tenga a Jenier Camacho Picado
-                    if "nombre y firma" in txt.lower() and "jefe" in txt.lower():
-                        r_jefe = cell.row - 1
-                        sheet.cell(row=r_jefe, column=cell.column, value=nombre_jefe_titular)
+    # 1. Asignación directa en la celda A46 (donde reside el nombre en la plantilla)
+    ws['A46'].value = "Jenier Camacho Picado"
+
+    # 2. Barrido exhaustivo sin límite de max_row (filas 1 a 65, columnas A a Q)
+    for r in range(1, 65):
+        for c in range(1, 18):
+            cell = ws.cell(row=r, column=c)
+            if cell.value is not None:
+                txt = str(cell.value).strip().lower()
+                if "edgar" in txt or "vargas" in txt or "brenes" in txt:
+                    cell.value = "Jenier Camacho Picado"
 
     # ===============================================================
-    # CONFIGURACIÓN DE PÁGINA (CONSERVA EL PIE DE PÁGINA COMPLETO)
+    # CONFIGURACIÓN DE PÁGINA (PIE DE PÁGINA COMPLETO SIN CORTES)
     # ===============================================================
     try:
         ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
