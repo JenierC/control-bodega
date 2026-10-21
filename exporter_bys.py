@@ -3,8 +3,73 @@ import sqlite3
 from datetime import datetime
 import os
 import shutil
+import re
 
 PLANTILLA_BYS = "Pedimentos de Departamento de Servicios Generales.xlsx"
+
+# Catálogo institucional con códigos exactos de Partida, Subpartida, Código y Subcódigo
+CATALOGO_CODIGOS_OFICIALES = {
+    "FIBRA PARA CEPILLO ELÉCTRICO 17 ROJA": ("29905", "1030", "100", "4"),
+    "CERA LÍQUIDA": ("29905", "1010", "2", "3"),
+    "CERA LIQUIDA": ("29905", "1010", "2", "3"),
+    "TOALLA PARA SECADO DE MANOS (DISPENSADOR)": ("29905", "1900", "190203", "0"),
+    "ESPONJA DE FIBRA, LAVAPLATOS": ("29905", "1030", "21", "0"),
+    "BOLSA PARA BASURA TIPO JARDIN PAQUETE 5": ("29905", "1060", "100015", "0"),
+    "ABRILLANTADOR LIQUIDO PARA MUEBLES   LITRO  (DILUIR EN 1 GALÓN)": ("29905", "1040", "60", "0"),
+    "DESINFECTANTE EN GALÓN": ("29905", "1035", "200", "0"),
+    "DESODORANTE AMBIENTAL EN AEROSOL": ("29905", "1050", "1", "0"),
+    "PAPEL HIGIENICO TIPO JUMBO (DISPENSADOR)": ("29905", "1900", "190201", "1"),
+    "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL": ("29905", "1050", "1", "1"),
+    "PAÑO DE MICROFIBRA PARA LIMPIEZA": ("29905", "1900", "55", "0"),
+    "TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)": ("29905", "1900", "190205", "0"),
+    "SERVILLETAS DE PAPEL": ("29905", "1900", "190209", "0"),
+}
+
+def desglosar_codigo_articulo(codigo_grupal, descripcion):
+    """
+    Desglosa el código en Partida, Sub-partida, Código y Sub-código
+    eliminando ceros a la izquierda y formateando según la normativa de DINADECO.
+    """
+    desc_clean = descripcion.strip().upper()
+    for nom_cat, cods in CATALOGO_CODIGOS_OFICIALES.items():
+        if nom_cat in desc_clean or desc_clean in nom_cat:
+            return cods
+
+    # Si viene con separadores (espacios, guiones, puntos)
+    tokens = re.findall(r'[0-9]+', str(codigo_grupal))
+    if len(tokens) >= 4:
+        partida = tokens[0]
+        sub_partida = str(int(tokens[1]))
+        codigo = str(int(tokens[2]))
+        sub_codigo = str(int(tokens[3]))
+        return partida, sub_partida, codigo, sub_codigo
+
+    # Si viene en formato numérico corrido
+    cod_str = re.sub(r'[^0-9]', '', str(codigo_grupal))
+    partida = cod_str[:5] if len(cod_str) >= 5 else "29905"
+    resto = cod_str[5:]
+    
+    if len(resto) >= 11:
+        sp_raw = resto[:5]
+        cd_raw = resto[5:11]
+        sc_raw = resto[11:]
+        sub_partida = str(int(sp_raw)) if sp_raw.isdigit() else sp_raw
+        codigo = str(int(cd_raw)) if cd_raw.isdigit() else cd_raw
+        sub_codigo = str(int(sc_raw)) if sc_raw.isdigit() else (sc_raw or "0")
+    elif len(resto) >= 8:
+        sp_raw = resto[:4]
+        cd_raw = resto[4:7]
+        sc_raw = resto[7:]
+        sub_partida = str(int(sp_raw)) if sp_raw.isdigit() else sp_raw
+        codigo = str(int(cd_raw)) if cd_raw.isdigit() else cd_raw
+        sub_codigo = str(int(sc_raw)) if sc_raw.isdigit() else (sc_raw or "0")
+    else:
+        sub_partida = "1050"
+        codigo = resto if resto else "1"
+        sub_codigo = "0"
+
+    return partida, sub_partida, codigo, sub_codigo
+
 
 def obtener_siguiente_consecutivo(anio_actual=None):
     if not anio_actual:
@@ -34,7 +99,6 @@ def obtener_siguiente_consecutivo(anio_actual=None):
 
 
 def cargar_plantilla_segura():
-    # 1. Buscar archivos con extensión nativa compatible (.xlsx / .xlsm)
     candidatos = [
         "Pedimentos de Departamento de Servicios Generales.xlsx",
         "Pedimentos de Departamento de Servicios Generales.xlsm",
@@ -56,7 +120,6 @@ def cargar_plantilla_segura():
                 except Exception:
                     pass
 
-    # 2. Si solo existe el archivo .xlk, se copia a .xlsx para evitar InvalidFileException
     for f in os.listdir("."):
         if f.lower().endswith(".xlk"):
             temp_xlsx = "plantilla_desde_xlk.xlsx"
@@ -83,12 +146,12 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         
     fecha_actual = datetime.now()
     
-    # Encabezado oficial en las celdas exactas de la plantilla
+    # PUNTO 2: Departamento de Servicios Generales B (con la letra B oficial)
+    depto_oficial = "Departamento de Servicios Generales B"
     ws['N8'] = consecutivo
     ws['N7'] = fecha_actual.strftime("%d/%m/%Y")
-    ws['D8'] = nombre_departamento
+    ws['D8'] = depto_oficial
     
-    # Cargar artículos de la base de datos
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     placeholders = ",".join("?" * len(solicitud_ids))
@@ -103,25 +166,22 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
     conn.close()
     
     fila_inicio = 12
-    for idx in range(26):  # Renglones oficiales 12 a 37
+    for idx in range(26):  # Renglones 12 a 37
         fila_actual = fila_inicio + idx
         if fila_actual > 37:
             break
             
         if idx < len(items):
             _, codigo_grupal, descripcion, cantidad, _, _ = items[idx]
-            codigo_grupal = str(codigo_grupal).strip()
             
-            partida = codigo_grupal[:5] if len(codigo_grupal) >= 5 else codigo_grupal
-            sub_partida = codigo_grupal[5:10] if len(codigo_grupal) >= 10 else ""
-            codigo = codigo_grupal[10:16] if len(codigo_grupal) >= 16 else ""
-            sub_codigo = codigo_grupal[16:] if len(codigo_grupal) > 16 else "0"
+            # PUNTO 1: Códigos de Partida, Subpartida, Código y Subcódigo exactos
+            partida, sub_partida, codigo, sub_codigo = desglosar_codigo_articulo(codigo_grupal, descripcion)
             
             ws.cell(row=fila_actual, column=1, value=partida)
             ws.cell(row=fila_actual, column=2, value=sub_partida)
             ws.cell(row=fila_actual, column=3, value=codigo)
             ws.cell(row=fila_actual, column=4, value=sub_codigo)
-            ws.cell(row=fila_actual, column=5, value=descripcion)
+            ws.cell(row=fila_actual, column=5, value=descripcion.strip())
             ws.cell(row=fila_actual, column=14, value=int(cantidad))
             ws.cell(row=fila_actual, column=15, value="")
         elif idx == len(items):
@@ -141,7 +201,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
 
-    # Asignación de Jenier Camacho Picado en jefatura
+    # Mantener a Jenier Camacho Picado como jefe titular
     ws['A46'].value = "Jenier Camacho Picado"
     for r in range(1, 65):
         for c in range(1, 18):
@@ -151,32 +211,31 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
                 if "edgar" in txt or "vargas" in txt or "brenes" in txt:
                     cell.value = "Jenier Camacho Picado"
 
-    # ===============================================================
-    # CONFIGURACIÓN FORMAL DEL PIE DE PÁGINA (SOBRESCRITURA DE VARIABLES)
-    # ===============================================================
+    # PUNTOS 4 Y 5 INTACTOS: Configuración del pie de página oficial
     fecha_pie_texto = fecha_actual.strftime("%d/%m/%Y")
     nombre_archivo_pie = f"Pedimentos de Departamento de Servicios Generales B {consecutivo}.xlsm"
     hora_pie_texto = fecha_actual.strftime("%H:%M")
 
-    # Sobrescribir las secciones del pie en todas las hojas del libro
     for sheet in wb.worksheets:
         for ftr in [sheet.oddFooter, sheet.evenFooter, sheet.firstFooter]:
             ftr.left.text = fecha_pie_texto
             ftr.center.text = nombre_archivo_pie
             ftr.right.text = hora_pie_texto
 
-    # Configuración de página e impresión
+    # PUNTO 3: Centrado de página y corrección de margen izquierdo para que no se corra a la izquierda
     try:
         ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
         ws.sheet_properties.pageSetUpPr.fitToPage = True
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 1
+        ws.page_setup.horizontalCentered = True  # Centrado armónico original
         
+        # Margen izquierdo en 0.7 pulgadas para alinearlo en X=55.0 como el original bueno
+        ws.page_margins.left = 0.7
+        ws.page_margins.right = 0.7
         ws.page_margins.top = 0.35
         ws.page_margins.bottom = 0.85
-        ws.page_margins.left = 0.4
-        ws.page_margins.right = 0.4
         ws.page_margins.footer = 0.45
         ws.page_margins.header = 0.2
     except Exception:
