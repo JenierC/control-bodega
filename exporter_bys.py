@@ -141,7 +141,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
 
-    # Asignar a Jenier Camacho Picado en el recuadro de jefatura
+    # Asignación de Jenier Camacho Picado en jefatura
     ws['A46'].value = "Jenier Camacho Picado"
     for r in range(1, 65):
         for c in range(1, 18):
@@ -152,27 +152,20 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
                     cell.value = "Jenier Camacho Picado"
 
     # ===============================================================
-    # CONFIGURACIÓN EXACTA DEL PIE DE PÁGINA INSTITUCIONAL
+    # CONFIGURACIÓN FORMAL DEL PIE DE PÁGINA (SOBRESCRITURA DE VARIABLES)
     # ===============================================================
-    fecha_pie = fecha_actual.strftime("%d/%m/%Y")
+    fecha_pie_texto = fecha_actual.strftime("%d/%m/%Y")
     nombre_archivo_pie = f"Pedimentos de Departamento de Servicios Generales B {consecutivo}.xlsm"
-    hora_pie = fecha_actual.strftime("%H:%M")
+    hora_pie_texto = fecha_actual.strftime("%H:%M")
 
-    # Configuración del pie de página oficial
-    for footer_obj in [ws.oddFooter, ws.evenFooter, ws.firstFooter]:
-        footer_obj.left.text = fecha_pie
-        footer_obj.left.font = "Arial"
-        footer_obj.left.size = 8
-        
-        footer_obj.center.text = nombre_archivo_pie
-        footer_obj.center.font = "Arial"
-        footer_obj.center.size = 8
-        
-        footer_obj.right.text = hora_pie
-        footer_obj.right.font = "Arial"
-        footer_obj.right.size = 8
+    # Sobrescribir las secciones del pie en todas las hojas del libro
+    for sheet in wb.worksheets:
+        for ftr in [sheet.oddFooter, sheet.evenFooter, sheet.firstFooter]:
+            ftr.left.text = fecha_pie_texto
+            ftr.center.text = nombre_archivo_pie
+            ftr.right.text = hora_pie_texto
 
-    # Ajustes de página y márgenes para evitar desbordes y cortes
+    # Configuración de página e impresión
     try:
         ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
         ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
