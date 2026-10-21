@@ -34,7 +34,7 @@ def obtener_siguiente_consecutivo(anio_actual=None):
 
 
 def cargar_plantilla_segura():
-    # 1. Buscar archivos con extensión nativa compatible
+    # 1. Buscar archivos con extensión nativa compatible (.xlsx / .xlsm)
     candidatos = [
         "Pedimentos de Departamento de Servicios Generales.xlsx",
         "Pedimentos de Departamento de Servicios Generales.xlsm",
@@ -74,6 +74,7 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
     
     wb = cargar_plantilla_segura()
     ws = wb['Pedimento'] if 'Pedimento' in wb.sheetnames else wb.active
+    wb.active = ws  # Asegura que LibreOffice convierta la hoja correcta
     
     if consecutivo_forzado:
         consecutivo = str(consecutivo_forzado).strip()
@@ -140,16 +141,26 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
             ws.cell(row=fila_actual, column=14, value="")
             ws.cell(row=fila_actual, column=15, value="")
 
-    # Sustituir el nombre anterior por Jenier Camacho Picado
-    for row in ws.iter_rows():
-        for cell in row:
-            if cell.value and isinstance(cell.value, str):
-                val_low = cell.value.lower()
-                if "edgar" in val_low or "vargas" in val_low:
-                    cell.value = "Jenier Camacho Picado"
+    # ===============================================================
+    # ACTUALIZACIÓN EXACTA: JENIER CAMACHO PICADO EN LA JEFATURA
+    # ===============================================================
+    nombre_jefe_titular = "Jenier Camacho Picado"
+    
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if cell.value is not None:
+                    txt = str(cell.value).strip()
+                    # 1. Reemplazar cualquier variante del nombre antiguo
+                    if any(k in txt.lower() for k in ["edgar", "vargas", "brenes"]):
+                        cell.value = nombre_jefe_titular
+                    # 2. Asegurar que la celda inmediatamente sobre el cargo tenga a Jenier Camacho Picado
+                    if "nombre y firma" in txt.lower() and "jefe" in txt.lower():
+                        r_jefe = cell.row - 1
+                        sheet.cell(row=r_jefe, column=cell.column, value=nombre_jefe_titular)
 
     # ===============================================================
-    # CONFIGURACIÓN DE MÁRGENES (EVITA EL CORTE DEL PIE DE PÁGINA)
+    # CONFIGURACIÓN DE PÁGINA (CONSERVA EL PIE DE PÁGINA COMPLETO)
     # ===============================================================
     try:
         ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
@@ -158,7 +169,6 @@ def generar_formulario_oficial_bys(solicitud_ids, nombre_departamento="Departame
         ws.page_setup.fitToWidth = 1
         ws.page_setup.fitToHeight = 1
         
-        # Margen inferior suficiente para que la fecha y hora no se corten
         ws.page_margins.top = 0.35
         ws.page_margins.bottom = 0.85
         ws.page_margins.left = 0.4
