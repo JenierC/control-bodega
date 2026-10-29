@@ -683,7 +683,7 @@ with tab_pedimentos:
                 conn.commit()
                 
                 hash_temp = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
-                consecutivo, ruta_excel = generar_formulario_oficial_bys(ids_guardados, "Departamento de Servicios Generales", "Pendiente de Firma", hash_temp)
+                consecutivo, ruta_excel = generar_formulario_oficial_bys(ids_guardados, "Departamento de Servicios Generales B", "Jenier Camacho Picado", hash_temp)
                 
                 placeholders = ",".join("?" * len(ids_guardados))
                 cursor.execute(f"UPDATE solicitudes SET consecutivo = ? WHERE id IN ({placeholders})", [consecutivo] + ids_guardados)
@@ -1151,7 +1151,7 @@ if st.session_state['rol'] == "ADMIN":
                     st.success(f"🎉 ¡Despacho del Pedimento #{consecutivo_final} registrado con éxito! Se cotejó contra lo pedido y se actualizaron los inventarios.")
 
     # ===============================================================
-    # TAB 4: INFORMES GENERALES (INTERACTIVO Y CON REGENERACIÓN)
+    # TAB 4: INFORMES GENERALES (INTERACTIVO, RENOMBRADO Y REGENERACIÓN)
     # ===============================================================
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico de Bodega")
@@ -1181,7 +1181,7 @@ if st.session_state['rol'] == "ADMIN":
             JOIN funcionarios f ON s.funcionario_id = f.id
             WHERE s.consecutivo IS NOT NULL AND s.consecutivo != ''
             GROUP BY s.consecutivo, f.nombre, f.espacio_asignado
-            ORDER BY s.id DESC
+            ORDER BY s.consecutivo DESC
         """, conn)
 
         if df_resumen.empty:
@@ -1240,6 +1240,72 @@ if st.session_state['rol'] == "ADMIN":
                     st.dataframe(df_detalles, hide_index=True, use_container_width=True)
 
                     st.markdown("---")
+                    st.write("**✏️ Cambiar Número de este Pedimento a Mano:**")
+                    col_ren1, col_ren2 = st.columns([3, 1])
+                    with col_ren1:
+                        nuevo_consec_input = st.text_input(
+                            "Modifique el número de consecutivo aquí:",
+                            value=ped_id,
+                            key=f"txt_renum_{ped_id}"
+                        )
+                    with col_ren2:
+                        st.write("")
+                        st.write("")
+                        if st.button("💾 Guardar Nuevo Número", key=f"btn_renum_{ped_id}"):
+                            nuevo_consec_clean = nuevo_consec_input.strip()
+                            if nuevo_consec_clean and nuevo_consec_clean != ped_id:
+                                conn_ren = sqlite3.connect("database.db")
+                                c_ren = conn_ren.cursor()
+                                c_ren.execute("UPDATE solicitudes SET consecutivo = ? WHERE consecutivo = ?", (nuevo_consec_clean, ped_id))
+                                conn_ren.commit()
+
+                                old_pdf = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf")
+                                new_pdf = os.path.join("pedimentos_generados", f"Pedimento_{nuevo_consec_clean}.pdf")
+                                old_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx")
+                                new_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{nuevo_consec_clean}.xlsx")
+                                
+                                if os.path.exists(old_pdf):
+                                    try:
+                                        os.rename(old_pdf, new_pdf)
+                                    except Exception:
+                                        pass
+                                if os.path.exists(old_xlsx):
+                                    try:
+                                        os.rename(old_xlsx, new_xlsx)
+                                    except Exception:
+                                        pass
+
+                                old_scan = os.path.join("pedimentos_escaneados", f"Escaneado_{ped_id}.pdf")
+                                new_scan = os.path.join("pedimentos_escaneados", f"Escaneado_{nuevo_consec_clean}.pdf")
+                                if os.path.exists(old_scan):
+                                    try:
+                                        os.rename(old_scan, new_scan)
+                                        c_ren.execute("UPDATE solicitudes SET ruta_pdf_escaneado = ? WHERE consecutivo = ?", (new_scan, nuevo_consec_clean))
+                                        conn_ren.commit()
+                                    except Exception:
+                                        pass
+
+                                c_ren.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (nuevo_consec_clean,))
+                                ids_ren = [r[0] for r in c_ren.fetchall()]
+                                conn_ren.close()
+
+                                if ids_ren:
+                                    h_hash = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
+                                    _, ruta_exc = generar_formulario_oficial_bys(
+                                        ids_ren,
+                                        "Departamento de Servicios Generales B",
+                                        "Jenier Camacho Picado",
+                                        h_hash,
+                                        consecutivo_forzado=nuevo_consec_clean
+                                    )
+                                    ruta_pdf_out = ruta_exc.replace(".xlsx", ".pdf")
+                                    exportar_excel_a_pdf(ruta_exc, ruta_pdf_out)
+
+                                st.success(f"¡Número de pedimento actualizado exitosamente a #{nuevo_consec_clean}!")
+                                time.sleep(1)
+                                st.rerun()
+
+                    st.markdown("---")
                     st.write("**🛠️ Acciones y Descargas de este Pedimento:**")
                     col_b_act1, col_b_act2, col_b_act3 = st.columns(3)
 
@@ -1255,8 +1321,8 @@ if st.session_state['rol'] == "ADMIN":
                                 h_hash = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
                                 _, ruta_exc = generar_formulario_oficial_bys(
                                     ids_ped,
-                                    "Departamento de Servicios Generales",
-                                    "Pendiente de Firma",
+                                    "Departamento de Servicios Generales B",
+                                    "Jenier Camacho Picado",
                                     h_hash,
                                     consecutivo_forzado=ped_id
                                 )
@@ -1564,7 +1630,7 @@ if st.session_state['rol'] == "ADMIN":
         conn.close()
 
         st.markdown("---")
-        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos")
+        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos (Para Nuevos Pedidos)")
         
         num_actual = obtener_ultimo_consecutivo_db()
         anio_actual = datetime.now().year
@@ -1607,8 +1673,8 @@ if st.session_state['rol'] == "ADMIN":
                         h_t = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
                         _, r_exc = generar_formulario_oficial_bys(
                             sol_ids_regen,
-                            "Departamento de Servicios Generales",
-                            "Pendiente de Firma",
+                            "Departamento de Servicios Generales B",
+                            "Jenier Camacho Picado",
                             h_t,
                             consecutivo_forzado=ped_sel_regen
                         )
