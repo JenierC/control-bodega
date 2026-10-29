@@ -1154,8 +1154,12 @@ if st.session_state['rol'] == "ADMIN":
     # TAB 4: INFORMES GENERALES (INTERACTIVO, RENOMBRADO Y REGENERACIÓN)
     # ===============================================================
     with tab_informes:
+        # ===============================================================
+    # TAB 4: INFORMES GENERALES (EDICIÓN DE ARTÍCULOS, NÚMEROS Y BORRADO)
+    # ===============================================================
+    with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico de Bodega")
-        st.caption("Lista consolidada por pedimento. Haga clic sobre cualquier pedimento para desplegar sus artículos o regenerar su PDF:")
+        st.caption("Lista consolidada por pedimento. Haga clic sobre cualquier pedimento para desplegar sus artículos, editarlos o regenerar su PDF:")
 
         conn = sqlite3.connect("database.db")
         
@@ -1221,9 +1225,14 @@ if st.session_state['rol'] == "ADMIN":
                     c_det3.write(f"📅 **Fecha:** {fecha_ped}")
                     c_det4.write(f"🏷️ **Estado:** {estado_gen}")
 
-                    st.write("**📋 Insumos Solicitados en este Pedimento:**")
+                    # 1. EDITAR ARTÍCULOS O CANTIDADES SOLICITADAS
+                    st.write("**📋 Editar Insumos Solicitados en este Pedimento:**")
+                    st.caption("Modifique la cantidad haciendo doble clic o marque '❌ Borrar' para quitar un artículo. Presione Guardar para actualizar:")
+                    
                     df_detalles = pd.read_sql_query("""
-                        SELECT a.descripcion AS [Artículo],
+                        SELECT s.id AS _id,
+                               0 AS [❌ Borrar],
+                               a.descripcion AS [Artículo],
                                s.cantidad AS [Cant. Solicitada],
                                COALESCE(s.cantidad_despachada, s.cantidad) AS [Cant. Despachada Real],
                                COALESCE(s.diferencia, 0) AS [Diferencia / Faltante],
@@ -1237,8 +1246,81 @@ if st.session_state['rol'] == "ADMIN":
                         ORDER BY s.id ASC
                     """, conn, params=(ped_id,))
 
-                    st.dataframe(df_detalles, hide_index=True, use_container_width=True)
+                    df_detalles['❌ Borrar'] = False
 
+                    df_editado = st.data_editor(
+                        df_detalles,
+                        column_config={
+                            "_id": None,
+                            "❌ Borrar": st.column_config.CheckboxColumn("❌ Borrar", default=False),
+                            "Artículo": st.column_config.TextColumn(disabled=True),
+                            "Cant. Solicitada": st.column_config.NumberColumn(min_value=1, step=1),
+                            "Cant. Despachada Real": st.column_config.NumberColumn(disabled=True),
+                            "Diferencia / Faltante": st.column_config.NumberColumn(disabled=True),
+                            "Estado de Entrega": st.column_config.TextColumn(disabled=True)
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key=f"editor_insumos_{ped_id}"
+                    )
+                    
+                    if st.button("💾 Guardar Cambios de Artículos y Regenerar PDF", key=f"btn_save_insumos_{ped_id}"):
+                        conn_upd = sqlite3.connect("database.db")
+                        c_upd = conn_upd.cursor()
+                        items_modificados = False
+                        
+                        for _, row_edit in df_editado.iterrows():
+                            id_sol = int(row_edit["_id"])
+                            if row_edit["❌ Borrar"]:
+                                c_upd.execute("DELETE FROM solicitudes WHERE id = ?", (id_sol,))
+                                items_modificados = True
+                            else:
+                                nueva_cant = int(row_edit["Cant. Solicitada"])
+                                c_upd.execute("SELECT cantidad, cantidad_despachada FROM solicitudes WHERE id = ?", (id_sol,))
+                                r_actual = c_upd.fetchone()
+                                if r_actual and r_actual[0] != nueva_cant:
+                                    cant_desp = r_actual[1]
+                                    if cant_desp is not None:
+                                        nueva_dif = nueva_cant - cant_desp
+                                        c_upd.execute("UPDATE solicitudes SET cantidad = ?, diferencia = ? WHERE id = ?", (nueva_cant, nueva_dif, id_sol))
+                                    else:
+                                        c_upd.execute("UPDATE solicitudes SET cantidad = ? WHERE id = ?", (nueva_cant, id_sol))
+                                    items_modificados = True
+                                    
+                        conn_upd.commit()
+                        
+                        if items_modificados:
+                            c_upd.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_id,))
+                            ids_ped = [r[0] for r in c_upd.fetchall()]
+                            
+                            if ids_ped:
+                                h_hash = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
+                                _, ruta_exc = generar_formulario_oficial_bys(
+                                    ids_ped,
+                                    "Departamento de Servicios Generales B",
+                                    "Jenier Camacho Picado",
+                                    h_hash,
+                                    consecutivo_forzado=ped_id
+                                )
+                                ruta_pdf_out = ruta_exc.replace(".xlsx", ".pdf")
+                                exportar_excel_a_pdf(ruta_exc, ruta_pdf_out)
+                                st.success("¡Cantidades actualizadas y PDF regenerado correctamente!")
+                            else:
+                                p_pdf = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf")
+                                p_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx")
+                                for p_file in [p_pdf, p_xlsx]:
+                                    if os.path.exists(p_file):
+                                        try: os.remove(p_file)
+                                        except Exception: pass
+                                st.warning("Se eliminaron todos los artículos. Pedimento vaciado.")
+                        else:
+                            st.info("No se detectaron cambios en los artículos.")
+                            
+                        conn_upd.close()
+                        time.sleep(1)
+                        st.rerun()
+
+                    # 2. CAMBIAR NÚMERO DE PEDIMENTO A MANO
                     st.markdown("---")
                     st.write("**✏️ Cambiar Número de este Pedimento a Mano:**")
                     col_ren1, col_ren2 = st.columns([3, 1])
@@ -1265,15 +1347,11 @@ if st.session_state['rol'] == "ADMIN":
                                 new_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{nuevo_consec_clean}.xlsx")
                                 
                                 if os.path.exists(old_pdf):
-                                    try:
-                                        os.rename(old_pdf, new_pdf)
-                                    except Exception:
-                                        pass
+                                    try: os.rename(old_pdf, new_pdf)
+                                    except Exception: pass
                                 if os.path.exists(old_xlsx):
-                                    try:
-                                        os.rename(old_xlsx, new_xlsx)
-                                    except Exception:
-                                        pass
+                                    try: os.rename(old_xlsx, new_xlsx)
+                                    except Exception: pass
 
                                 old_scan = os.path.join("pedimentos_escaneados", f"Escaneado_{ped_id}.pdf")
                                 new_scan = os.path.join("pedimentos_escaneados", f"Escaneado_{nuevo_consec_clean}.pdf")
@@ -1282,8 +1360,7 @@ if st.session_state['rol'] == "ADMIN":
                                         os.rename(old_scan, new_scan)
                                         c_ren.execute("UPDATE solicitudes SET ruta_pdf_escaneado = ? WHERE consecutivo = ?", (new_scan, nuevo_consec_clean))
                                         conn_ren.commit()
-                                    except Exception:
-                                        pass
+                                    except Exception: pass
 
                                 c_ren.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (nuevo_consec_clean,))
                                 ids_ren = [r[0] for r in c_ren.fetchall()]
@@ -1305,6 +1382,7 @@ if st.session_state['rol'] == "ADMIN":
                                 time.sleep(1)
                                 st.rerun()
 
+                    # 3. ACCIONES Y DESCARGAS
                     st.markdown("---")
                     st.write("**🛠️ Acciones y Descargas de este Pedimento:**")
                     col_b_act1, col_b_act2, col_b_act3 = st.columns(3)
@@ -1357,8 +1435,37 @@ if st.session_state['rol'] == "ADMIN":
                                     key=f"dl_informe_{ped_id}"
                                 )
 
-        conn.close()
+                    # 4. ELIMINAR ESTE PEDIMENTO UNO POR UNO
+                    st.markdown("---")
+                    st.write("🛑 **Eliminar este Pedimento:**")
+                    col_del1, col_del2 = st.columns([3, 1])
+                    with col_del1:
+                        conf_del = st.checkbox(f"Confirmo que deseo borrar el pedimento #{ped_id} del sistema.", key=f"chk_del_{ped_id}")
+                    with col_del2:
+                        if st.button("🗑️ Eliminar Definitivamente", key=f"btn_del_{ped_id}"):
+                            if conf_del:
+                                conn_del = sqlite3.connect("database.db")
+                                c_del = conn_del.cursor()
+                                c_del.execute("DELETE FROM solicitudes WHERE consecutivo = ?", (ped_id,))
+                                conn_del.commit()
+                                conn_del.close()
+                                
+                                for p_file in [
+                                    os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf"),
+                                    os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx"),
+                                    os.path.join("pedimentos_escaneados", f"Escaneado_{ped_id}.pdf")
+                                ]:
+                                    if os.path.exists(p_file):
+                                        try: os.remove(p_file)
+                                        except Exception: pass
+                                
+                                st.success(f"¡Pedimento #{ped_id} eliminado exitosamente!")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("Marque la casilla de confirmación para poder eliminarlo.")
 
+        conn.close()
     # ===============================================================
     # TAB 5: REGLAS DE FRECUENCIA Y VIDA ÚTIL DE INSUMOS
     # ===============================================================
