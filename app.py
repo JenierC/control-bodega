@@ -1153,7 +1153,7 @@ if st.session_state['rol'] == "ADMIN":
     # ===============================================================
     # TAB 4: INFORMES GENERALES (INTERACTIVO, RENOMBRADO Y REGENERACIÓN)
     # ===============================================================
-    with tab_informes:
+
         # ===============================================================
     # TAB 4: INFORMES GENERALES (EDICIÓN DE ARTÍCULOS, NÚMEROS Y BORRADO)
     # ===============================================================
