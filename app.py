@@ -1264,7 +1264,7 @@ if st.session_state['rol'] == "ADMIN":
                         key=f"editor_insumos_{ped_id}"
                     )
                     
-                    if st.button("💾 Guardar Cambios de Artículos y Regenerar PDF", key=f"btn_save_insumos_{ped_id}"):
+                    if st.button("💾 Guardar Cambios de la Tabla y Regenerar PDF", key=f"btn_save_insumos_{ped_id}"):
                         conn_upd = sqlite3.connect("database.db")
                         c_upd = conn_upd.cursor()
                         items_modificados = False
@@ -1304,7 +1304,7 @@ if st.session_state['rol'] == "ADMIN":
                                 )
                                 ruta_pdf_out = ruta_exc.replace(".xlsx", ".pdf")
                                 exportar_excel_a_pdf(ruta_exc, ruta_pdf_out)
-                                st.success("¡Cantidades actualizadas y PDF regenerado correctamente!")
+                                st.success("¡Artículos actualizados y PDF regenerado correctamente!")
                             else:
                                 p_pdf = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf")
                                 p_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx")
@@ -1312,7 +1312,7 @@ if st.session_state['rol'] == "ADMIN":
                                     if os.path.exists(p_file):
                                         try: os.remove(p_file)
                                         except Exception: pass
-                                st.warning("Se eliminaron todos los artículos. Pedimento vaciado.")
+                                st.warning("Se eliminaron todos los artículos de este pedimento.")
                         else:
                             st.info("No se detectaron cambios en los artículos.")
                             
@@ -1320,6 +1320,70 @@ if st.session_state['rol'] == "ADMIN":
                         time.sleep(1)
                         st.rerun()
 
+                    # NUEVA SECCIÓN: AGREGAR O REEMPLAZAR POR OTRO ÍTEM / INSUMO
+                    st.markdown("---")
+                    st.write("**➕ Agregar o Cambiar por otro Insumo a este Pedimento:**")
+                    st.caption("Seleccione el artículo que desea agregar (por ejemplo otro tipo de papel) y su cantidad:")
+                    
+                    conn_catalogo = sqlite3.connect("database.db")
+                    df_cat_art = pd.read_sql_query("SELECT codigo_grupal, descripcion FROM articulos ORDER BY descripcion ASC", conn_catalogo)
+                    conn_catalogo.close()
+                    
+                    col_nuevo_art1, col_nuevo_art2, col_nuevo_art3 = st.columns([3, 1, 1])
+                    with col_nuevo_art1:
+                        nuevo_art_sel = st.selectbox(
+                            "Seleccione el nuevo artículo a incorporar:",
+                            df_cat_art['descripcion'].tolist(),
+                            key=f"sel_nuevo_art_{ped_id}"
+                        )
+                    with col_nuevo_art2:
+                        nueva_cant_sel = st.number_input(
+                            "Cantidad:",
+                            min_value=1,
+                            value=1,
+                            step=1,
+                            key=f"cant_nuevo_art_{ped_id}"
+                        )
+                    with col_nuevo_art3:
+                        st.write("")
+                        st.write("")
+                        if st.button("➕ Agregar al Pedimento", key=f"btn_add_nuevo_art_{ped_id}"):
+                            row_cat = df_cat_art[df_cat_art['descripcion'] == nuevo_art_sel].iloc[0]
+                            cod_nuevo = row_cat['codigo_grupal']
+                            
+                            conn_ins = sqlite3.connect("database.db")
+                            c_ins = conn_ins.cursor()
+                            c_ins.execute("SELECT funcionario_id FROM solicitudes WHERE consecutivo = ? LIMIT 1", (ped_id,))
+                            r_func = c_ins.fetchone()
+                            f_id = r_func[0] if r_func else 1
+                            
+                            c_ins.execute("""
+                                INSERT INTO solicitudes (
+                                    funcionario_id, articulo_id, cantidad, cantidad_despachada, diferencia,
+                                    es_valido, justificacion, estado, consecutivo
+                                ) VALUES (?, ?, ?, ?, 0, 1, 'Insumo agregado o reemplazado desde Informes', 'APROBADO_FIRMA_DIGITAL', ?)
+                            """, (f_id, cod_nuevo, int(nueva_cant_sel), int(nueva_cant_sel), ped_id))
+                            conn_ins.commit()
+                            
+                            c_ins.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_id,))
+                            ids_ped_actualizados = [r[0] for r in c_ins.fetchall()]
+                            conn_ins.close()
+                            
+                            if ids_ped_actualizados:
+                                h_hash = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
+                                _, ruta_exc = generar_formulario_oficial_bys(
+                                    ids_ped_actualizados,
+                                    "Departamento de Servicios Generales B",
+                                    "Jenier Camacho Picado",
+                                    h_hash,
+                                    consecutivo_forzado=ped_id
+                                )
+                                ruta_pdf_out = ruta_exc.replace(".xlsx", ".pdf")
+                                exportar_excel_a_pdf(ruta_exc, ruta_pdf_out)
+                                
+                            st.success(f"¡Se agregó '{nuevo_art_sel}' ({nueva_cant_sel} unidades) y se regeneró el PDF!")
+                            time.sleep(1)
+                            st.rerun()
                     # 2. CAMBIAR NÚMERO DE PEDIMENTO A MANO
                     st.markdown("---")
                     st.write("**✏️ Cambiar Número de este Pedimento a Mano:**")
