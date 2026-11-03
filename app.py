@@ -1204,8 +1204,8 @@ if st.session_state['rol'] == "ADMIN":
         # Consulta de 1 sola fila por pedimento
         df_resumen = pd.read_sql_query("""
             SELECT s.consecutivo AS Pedimento,
-                   f.nombre AS Funcionario,
-                   f.espacio_asignado AS Ubicacion,
+                   MAX(f.nombre) AS Funcionario,
+                   MAX(f.espacio_asignado) AS Ubicacion,
                    COUNT(s.id) AS Total_Articulos,
                    SUM(s.cantidad) AS Total_Solicitado,
                    SUM(COALESCE(s.cantidad_despachada, s.cantidad)) AS Total_Despachado,
@@ -1222,7 +1222,7 @@ if st.session_state['rol'] == "ADMIN":
             FROM solicitudes s
             JOIN funcionarios f ON s.funcionario_id = f.id
             WHERE s.consecutivo IS NOT NULL AND s.consecutivo != ''
-            GROUP BY s.consecutivo, f.nombre, f.espacio_asignado
+            GROUP BY s.consecutivo
             ORDER BY s.consecutivo DESC
         """, conn)
 
@@ -1239,7 +1239,7 @@ if st.session_state['rol'] == "ADMIN":
             st.markdown("---")
             busqueda = st.text_input("🔍 Buscar por número de pedimento o funcionario:", key="search_informes")
             
-            for _, ped_row in df_resumen.iterrows():
+            for idx_ped, ped_row in df_resumen.iterrows():
                 ped_id = ped_row['Pedimento']
                 func_nom = ped_row['Funcionario']
                 ubic = ped_row['Ubicacion']
@@ -1247,6 +1247,7 @@ if st.session_state['rol'] == "ADMIN":
                 estado_gen = ped_row['Estado_General']
                 tot_arts = ped_row['Total_Articulos']
                 tot_falt = ped_row['Total_Faltante']
+                k_id = f"{ped_id}_{idx_ped}"
                 
                 if busqueda.strip():
                     termino = busqueda.strip().upper()
@@ -1298,12 +1299,12 @@ if st.session_state['rol'] == "ADMIN":
                         },
                         hide_index=True,
                         use_container_width=True,
-                        key=f"editor_insumos_{ped_id}"
+                        key=f"editor_insumos_{k_id}"
                     )
                     
                     col_save_art, col_add_space = st.columns([2, 1])
                     with col_save_art:
-                        if st.button("💾 Guardar Cambios de la Tabla y Regenerar PDF", key=f"btn_save_insumos_{ped_id}"):
+                        if st.button("💾 Guardar Cambios de la Tabla y Regenerar PDF", key=f"btn_save_insumos_{k_id}"):
                             conn_upd = sqlite3.connect("database.db")
                             c_upd = conn_upd.cursor()
                             items_modificados = False
@@ -1373,7 +1374,7 @@ if st.session_state['rol'] == "ADMIN":
                         nuevo_art_sel = st.selectbox(
                             "Seleccione el nuevo artículo a incorporar:",
                             df_cat_art['descripcion'].tolist(),
-                            key=f"sel_nuevo_art_{ped_id}"
+                            key=f"sel_nuevo_art_{k_id}"
                         )
                     with col_nuevo_art2:
                         nueva_cant_sel = st.number_input(
@@ -1381,12 +1382,12 @@ if st.session_state['rol'] == "ADMIN":
                             min_value=1,
                             value=1,
                             step=1,
-                            key=f"cant_nuevo_art_{ped_id}"
+                            key=f"cant_nuevo_art_{k_id}"
                         )
                     with col_nuevo_art3:
                         st.write("")
                         st.write("")
-                        if st.button("➕ Agregar al Pedimento", key=f"btn_add_nuevo_art_{ped_id}"):
+                        if st.button("➕ Agregar al Pedimento", key=f"btn_add_nuevo_art_{k_id}"):
                             row_cat = df_cat_art[df_cat_art['descripcion'] == nuevo_art_sel].iloc[0]
                             cod_nuevo = row_cat['codigo_grupal']
                             
@@ -1432,12 +1433,12 @@ if st.session_state['rol'] == "ADMIN":
                         nuevo_consec_input = st.text_input(
                             "Modifique el número de consecutivo aquí:",
                             value=ped_id,
-                            key=f"txt_renum_{ped_id}"
+                            key=f"txt_renum_{k_id}"
                         )
                     with col_ren2:
                         st.write("")
                         st.write("")
-                        if st.button("💾 Guardar Nuevo Número", key=f"btn_renum_{ped_id}"):
+                        if st.button("💾 Guardar Nuevo Número", key=f"btn_renum_{k_id}"):
                             nuevo_consec_clean = nuevo_consec_input.strip()
                             if nuevo_consec_clean and nuevo_consec_clean != ped_id:
                                 conn_ren = sqlite3.connect("database.db")
@@ -1496,7 +1497,7 @@ if st.session_state['rol'] == "ADMIN":
                     col_b_act1, col_b_act2, col_b_act3 = st.columns(3)
 
                     with col_b_act1:
-                        if st.button(f"🔄 Regenerar PDF #{ped_id}", key=f"btn_regen_inf_{ped_id}"):
+                        if st.button(f"🔄 Regenerar PDF #{ped_id}", key=f"btn_regen_inf_{k_id}"):
                             conn_sol = sqlite3.connect("database.db")
                             c_sol = conn_sol.cursor()
                             c_sol.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_id,))
@@ -1527,7 +1528,7 @@ if st.session_state['rol'] == "ADMIN":
                                     data=f_of.read(),
                                     file_name=f"Pedimento_{ped_id}.pdf",
                                     mime="application/pdf",
-                                    key=f"dl_pdf_oficial_{ped_id}"
+                                    key=f"dl_pdf_oficial_{k_id}"
                                 )
 
                     with col_b_act3:
@@ -1540,16 +1541,16 @@ if st.session_state['rol'] == "ADMIN":
                                     data=f_esc.read(),
                                     file_name=os.path.basename(ruta_esc),
                                     mime="application/pdf",
-                                    key=f"dl_informe_{ped_id}"
+                                    key=f"dl_informe_{k_id}"
                                 )
 
                     st.markdown("---")
                     st.write("🛑 **Eliminar este Pedimento:**")
                     col_del1, col_del2 = st.columns([3, 1])
                     with col_del1:
-                        conf_del = st.checkbox(f"Confirmo que deseo borrar el pedimento #{ped_id} del sistema.", key=f"chk_del_{ped_id}")
+                        conf_del = st.checkbox(f"Confirmo que deseo borrar el pedimento #{ped_id} del sistema.", key=f"chk_del_{k_id}")
                     with col_del2:
-                        if st.button("🗑️ Eliminar Definitivamente", key=f"btn_del_{ped_id}"):
+                        if st.button("🗑️ Eliminar Definitivamente", key=f"btn_del_{k_id}"):
                             if conf_del:
                                 conn_del = sqlite3.connect("database.db")
                                 c_del = conn_del.cursor()
