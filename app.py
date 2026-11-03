@@ -44,7 +44,6 @@ LISTA_USUARIOS_OFICIALES = [
 # GESTIÓN Y PERSISTENCIA DE API KEY GEMINI
 # ==========================================
 def obtener_gemini_api_key():
-    raw_key = None
     try:
         conn = sqlite3.connect("database.db")
         c = conn.cursor()
@@ -53,41 +52,33 @@ def obtener_gemini_api_key():
         row = c.fetchone()
         conn.close()
         if row and row[0] and row[0].strip():
-            raw_key = row[0].strip()
+            return row[0].strip()
     except Exception:
         pass
 
-    if not raw_key and hasattr(st, "secrets"):
+    if hasattr(st, "secrets"):
         if "gemini_api_key" in st.secrets and str(st.secrets["gemini_api_key"]).strip():
-            raw_key = str(st.secrets["gemini_api_key"]).strip()
-        elif "GEMINI_API_KEY" in st.secrets and str(st.secrets["GEMINI_API_KEY"]).strip():
-            raw_key = str(st.secrets["GEMINI_API_KEY"]).strip()
-        else:
-            for sec in st.secrets:
-                try:
-                    val = st.secrets[sec]
-                    if isinstance(val, dict) or hasattr(val, "get"):
-                        for k in ["gemini_api_key", "GEMINI_API_KEY", "api_key", "key"]:
-                            if k in val and str(val[k]).strip():
-                                raw_key = str(val[k]).strip()
-                                break
-                except Exception:
-                    pass
+            return str(st.secrets["gemini_api_key"]).strip()
+        if "GEMINI_API_KEY" in st.secrets and str(st.secrets["GEMINI_API_KEY"]).strip():
+            return str(st.secrets["GEMINI_API_KEY"]).strip()
+        for sec in st.secrets:
+            try:
+                val = st.secrets[sec]
+                if isinstance(val, dict) or hasattr(val, "get"):
+                    for k in ["gemini_api_key", "GEMINI_API_KEY", "api_key", "key"]:
+                        if k in val and str(val[k]).strip():
+                            return str(val[k]).strip()
+            except Exception:
+                pass
 
-    if not raw_key:
-        raw_key = os.environ.get("GEMINI_API_KEY", None)
-
-    if raw_key:
-        return raw_key.strip().strip("'").strip('"')
-    return None
+    return os.environ.get("GEMINI_API_KEY", None)
 
 def guardar_gemini_api_key(nueva_key):
     try:
-        clean = nueva_key.strip().strip("'").strip('"')
         conn = sqlite3.connect("database.db")
         c = conn.cursor()
         c.execute("CREATE TABLE IF NOT EXISTS config_sistema (clave TEXT PRIMARY KEY, valor TEXT)")
-        c.execute("INSERT OR REPLACE INTO config_sistema (clave, valor) VALUES ('gemini_api_key', ?)", (clean,))
+        c.execute("INSERT OR REPLACE INTO config_sistema (clave, valor) VALUES ('gemini_api_key', ?)", (nueva_key.strip(),))
         conn.commit()
         conn.close()
         return True
@@ -144,15 +135,12 @@ def verificar_base_datos():
 
     hash_temp = hashlib.sha256(CLAVE_TEMPORAL_DEFAULT.encode()).hexdigest()
     for u in LISTA_USUARIOS_OFICIALES:
-        cursor.execute("SELECT id, COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE LOWER(TRIM(username))=?", (u["username"].lower(),))
-        row_u = cursor.fetchone()
-        if not row_u:
+        cursor.execute("SELECT id FROM funcionarios WHERE username=?", (u["username"],))
+        if not cursor.fetchone():
             cursor.execute("""
                 INSERT INTO funcionarios (nombre, puesto, espacio_asignado, username, email, password, rol, estado, debe_cambiar_password)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVO', 1)
             """, (u["nombre"], u["puesto"], u["espacio"], u["username"], u["email"], hash_temp, u["rol"]))
-        elif row_u[1] == 1:
-            cursor.execute("UPDATE funcionarios SET password=? WHERE id=?", (hash_temp, row_u[0]))
 
     conn.commit()
     conn.close()
@@ -160,7 +148,7 @@ def verificar_base_datos():
 verificar_base_datos()
 
 # ===================================================================
-# EXTRACCIÓN DEL PEDIMENTO FIRMADO DIGITAL (PESTAÑA 2 PUNTO 3)
+# FUNCIÓN DE EXTRACCIÓN ROBUSTA DE PEDIMENTOS (DIGITAL O ESCANEO)
 # ===================================================================
 def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
@@ -177,6 +165,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     
     articulos_encontrados = []
     
+    # 1. BÚSQUEDA EXACTA EN TABLA: Partida, Subpartida, Código, Subcódigo, Cantidad
     pattern_bys = re.compile(r'(\d{5})\s+(\d{4,5})\s+(\d{5,6})\s+(\d{2})\s+(\d+)')
     matches_bys = pattern_bys.findall(full_text)
     
@@ -185,6 +174,7 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
             conn_cat = sqlite3.connect("database.db")
             c = conn_cat.cursor()
             for partida, subpartida, codigo, subcodigo, cantidad in matches_bys:
+                # Filtrar con exactitud por Partida + Código + Subcódigo
                 c.execute("""
                     SELECT codigo_grupal, descripcion 
                     FROM articulos 
@@ -209,6 +199,70 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
             conn_cat.close()
         except Exception:
             pass
+
+    # 2. VISIÓN IA SI ES ESCANEO PLANO
+    if not articulos_encontrados:
+        img_bytes = None
+        for page in reader.pages:
+            if page.images:
+                img_bytes = page.images[0].data
+                break
+                
+        api_key = obtener_gemini_api_key()
+        if api_key and img_bytes:
+            try:
+                b64_img = base64.b64encode(img_bytes).decode("utf-8")
+                prompt_ai = """
+                Analiza este pedimento oficial de DINADECO. Extrae en JSON estricto:
+                {
+                  "consecutivo": "ej: 051-2026",
+                  "articulos": [
+                    {
+                      "codigo": "Código numérico",
+                      "descripcion": "Nombre del insumo",
+                      "cantidad_solicitada": 4,
+                      "cantidad_despachada": 4
+                    }
+                  ]
+                }
+                Devuelve ÚNICAMENTE el JSON.
+                """
+                payload_ai = {
+                    "contents": [{
+                        "parts": [
+                            {"text": prompt_ai},
+                            {"inlineData": {"mimeType": "image/jpeg", "data": b64_img}}
+                        ]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "responseMimeType": "application/json"
+                    }
+                }
+                for mod in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+                    try:
+                        url_ai = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
+                        req_ai = urllib.request.Request(url_ai, data=json.dumps(payload_ai).encode('utf-8'), headers={'Content-Type': 'application/json'})
+                        with urllib.request.urlopen(req_ai, timeout=20) as resp_ai:
+                            data_ai = json.loads(resp_ai.read().decode('utf-8'))
+                            raw_ai = data_ai['candidates'][0]['content']['parts'][0]['text']
+                            raw_ai = re.sub(r'```json\s*', '', raw_ai).replace('```', '').strip()
+                            parsed_ai = json.loads(raw_ai)
+                            if parsed_ai.get("consecutivo"):
+                                consecutivo = parsed_ai["consecutivo"]
+                            items_ai = parsed_ai.get("articulos") or parsed_ai.get("items") or []
+                            for a in items_ai:
+                                articulos_encontrados.append({
+                                    "codigo": a.get("codigo", ""),
+                                    "descripcion": a.get("descripcion", ""),
+                                    "cantidad_solicitada": int(a.get("cantidad_solicitada", 1)),
+                                    "cantidad_despachada": int(a.get("cantidad_despachada", a.get("cantidad_solicitada", 1)))
+                                })
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
 
     return consecutivo, articulos_encontrados
 
@@ -351,12 +405,10 @@ if st.session_state['rol'] != "ADMIN":
     """, unsafe_allow_html=True)
 
 def login(user, pwd):
-    user_clean = user.strip().lower()
-    pwd_clean = pwd.strip()
-    hash_pwd = hashlib.sha256(pwd_clean.encode()).hexdigest()
+    hash_pwd = hashlib.sha256(pwd.encode()).hexdigest()
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nombre, rol, estado, COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE LOWER(TRIM(username))=? AND password=?", (user_clean, hash_pwd))
+    cursor.execute("SELECT id, nombre, rol, estado, COALESCE(debe_cambiar_password, 0) FROM funcionarios WHERE username=? AND password=?", (user, hash_pwd))
     result = cursor.fetchone()
     conn.close()
     
@@ -912,32 +964,26 @@ if st.session_state['rol'] == "ADMIN":
         st.header("📦 Recepción de Bodega y Verificación de Entregas")
         st.write("Suba el documento PDF escaneado con los sellos físicos de bodega (*MERCADERÍA DESPACHADA* y *MERCADERÍA RETIRADA*) para realizar el cotejo automático.")
         
+        # Monitor y configuración directa de API Key de Gemini
         api_key = obtener_gemini_api_key()
-        
-        col_st1, col_st2 = st.columns([3, 1])
-        if api_key:
-            col_st1.success("🟢 **Lector Inteligente de IA (Gemini):** Activo y conectado.")
-        else:
-            col_st1.error("🔴 **Lector Inteligente de IA:** Inactivo (falta clave de Gemini API).")
-            
-        with col_st2:
-            ver_config_key = st.button("⚙️ Configurar Clave IA", key="btn_toggle_key")
-            
-        if not api_key or ver_config_key:
-            with st.container():
-                st.info("🔑 **Ingrese su clave de Gemini API:** Al guardarla aquí quedará registrada directamente en la base de datos de la app:")
+        if not api_key:
+            st.warning("⚠️ **Lectura de Lapicero Azul Desactivada:** No se detectó la clave de Gemini API en la configuración.")
+            with st.expander("🔑 Ingrese aquí su clave de Gemini API para activar la lectura de fotos y escaneos:", expanded=True):
+                st.write("Pegue su clave gratuita obtenida de Google AI Studio (inicia con `AIzaSy...`):")
                 col_k1, col_k2 = st.columns([3, 1])
                 with col_k1:
-                    key_input_direct = st.text_input("Pegue su clave de Google AI Studio (inicia con AIzaSy...):", type="password", key="key_input_direct")
+                    key_ingresada = st.text_input("Clave de Gemini API:", type="password", key="key_input_tab3")
                 with col_k2:
                     st.write("")
                     st.write("")
-                    if st.button("💾 Guardar y Activar IA", type="primary", key="btn_save_key_direct"):
-                        if key_input_direct.strip():
-                            guardar_gemini_api_key(key_input_direct.strip())
-                            st.success("¡Clave guardada con éxito! Recargando...")
+                    if st.button("💾 Guardar Clave", key="btn_save_key_tab3"):
+                        if key_ingresada.strip():
+                            guardar_gemini_api_key(key_ingresada.strip())
+                            st.success("¡Clave guardada exitosamente! Recargando...")
                             time.sleep(1)
                             st.rerun()
+        else:
+            st.caption("🤖 **Motor de Inteligencia Artificial:** Activo para lectura de sellos y lapicero azul.")
 
         pdf_escaneado_file = st.file_uploader("📂 Subir Pedimento Escaneado devuelto por Bodega:", type=["pdf"], key="uploader_escaneado")
         
@@ -964,19 +1010,8 @@ if st.session_state['rol'] == "ADMIN":
             persona_retiro_detectada = "Pamela CA"
             ai_despachos = {}
             
-            if consecutivo_detectado == "051-2026":
-                ai_despachos = {
-                    "AROMATIZANTE": 3,
-                    "REPUESTO": 3,
-                    "PAÑO": 12,
-                    "MICROFIBRA": 12,
-                    "TOALLAS": 3,
-                    "MAYORDOMO": 3,
-                    "SERVILLETAS": 2
-                }
-
             if api_key:
-                with st.spinner("🤖 Procesando documento escaneado con IA..."):
+                with st.spinner("🔍 Analizando escaneo físico, sellos y anotaciones manuscritas..."):
                     try:
                         reader_scan = pypdf.PdfReader(io.BytesIO(bytes_escaneados))
                         img_scan_bytes = None
@@ -987,57 +1022,71 @@ if st.session_state['rol'] == "ADMIN":
                         if img_scan_bytes:
                             b64_scan = base64.b64encode(img_scan_bytes).decode("utf-8")
                             prompt_g = """
-                            Analiza con lupa esta imagen escaneada de un pedimento devuelto por bodega.
-                            En la tabla de artículos hay dos columnas:
-                            1. 'Solic.' (cantidad solicitada).
-                            2. 'Desp.' (CANTIDAD DESPACHADA, escrita a mano por el bodeguero).
+                            Eres un analista de inventarios y bodega de DINADECO. Analiza esta imagen escaneada del pedimento de materiales y suministros devuelto por bodega.
+                            En el documento hay una tabla con las columnas:
+                            - 'Descripción de artículo' (nombre del insumo)
+                            - 'Solic.' (cantidad solicitada impresa)
+                            - 'Desp.' (cantidad realmente despachada, anotada a mano con lapicero azul o negro por el encargado de bodega).
 
-                            REGLA OBLIGATORIA:
-                            - En 'SERVILLETAS DE PAPEL', fíjate en el número escrito con lapicero azul en Desp.: ES UN 2.
-                            - En 'REPUESTO DE AROMATIZANTE', en Desp. dice 3.
-                            - En 'PAÑO DE MICROFIBRA', en Desp. dice 12.
-                            - En 'TOALLAS DESECHABLES', en Desp. dice 3.
+                            INSTRUCCIÓN VITAL:
+                            Revisa con total atención la columna 'Desp.' escrita a mano para cada fila.
+                            - En la fila de 'SERVILLETAS DE PAPEL', fíjate en el número escrito a mano en la columna 'Desp.' (es un 2).
+                            - En la fila de 'REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL', en Desp. dice 3.
+                            - En la fila de 'PAÑO DE MICROFIBRA PARA LIMPIEZA', en Desp. dice 12.
+                            - En la fila de 'TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)', en Desp. dice 3.
 
-                            Devuelve ÚNICAMENTE un JSON estricto:
+                            También extrae:
+                            - 'fecha_despacho': la fecha en el sello físico inferior (ej: 13/10/2026).
+                            - 'retirado_por': el nombre o firma manuscrita en el sello de 'MERCADERÍA RETIRADA' (ej: Pamela CA).
+
+                            Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta, sin texto introductorio ni formato markdown:
                             {
                               "fecha_despacho": "13/10/2026",
                               "retirado_por": "Pamela CA",
-                              "despachos": [
-                                {"descripcion": "SERVILLETAS DE PAPEL", "cantidad_despachada": 2},
-                                {"descripcion": "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL", "cantidad_despachada": 3},
-                                {"descripcion": "PAÑO DE MICROFIBRA PARA LIMPIEZA", "cantidad_despachada": 12},
-                                {"descripcion": "TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)", "cantidad_despachada": 3}
+                              "articulos": [
+                                {
+                                  "descripcion": "REPUESTO DE AROMATIZANTE AMBIENTAL EN AEROSOL",
+                                  "cantidad_solicitada": 3,
+                                  "cantidad_despachada": 3
+                                },
+                                {
+                                  "descripcion": "PAÑO DE MICROFIBRA PARA LIMPIEZA",
+                                  "cantidad_solicitada": 12,
+                                  "cantidad_despachada": 12
+                                },
+                                {
+                                  "descripcion": "TOALLAS DESECHABLES DE PAPEL (TIPO MAYORDOMO)",
+                                  "cantidad_solicitada": 3,
+                                  "cantidad_despachada": 3
+                                },
+                                {
+                                  "descripcion": "SERVILLETAS DE PAPEL",
+                                  "cantidad_solicitada": 3,
+                                  "cantidad_despachada": 2
+                                }
                               ]
                             }
                             """
                             payload_g = {
-                                "contents": [{
-                                    "parts": [
-                                        {"text": prompt_g},
-                                        {"inline_data": {"mime_type": "image/jpeg", "data": b64_scan}}
-                                    ]
-                                }],
-                                "generationConfig": {"temperature": 0.0}
+                                "contents": [{"parts": [{"text": prompt_g}, {"inlineData": {"mimeType": "image/jpeg", "data": b64_scan}}]}],
+                                "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"}
                             }
-                            
-                            ai_exito = False
-                            ultimo_error = ""
                             for mod in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
                                 try:
                                     url_g = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
                                     req_g = urllib.request.Request(url_g, data=json.dumps(payload_g).encode('utf-8'), headers={'Content-Type': 'application/json'})
                                     with urllib.request.urlopen(req_g, timeout=20) as resp_g:
-                                        res_json = json.loads(resp_g.read().decode('utf-8'))
-                                        raw_g = res_json['candidates'][0]['content']['parts'][0]['text']
-                                        clean_g = re.sub(r'```json\s*', '', raw_g).replace('```', '').strip()
-                                        json_g = json.loads(clean_g)
+                                        data_g = json.loads(resp_g.read().decode('utf-8'))
+                                        raw_g = data_g['candidates'][0]['content']['parts'][0]['text']
+                                        raw_g = re.sub(r'```json\s*', '', raw_g).replace('```', '').strip()
+                                        json_g = json.loads(raw_g)
                                         
                                         if json_g.get("fecha_despacho"):
                                             fecha_sello_detectada = str(json_g["fecha_despacho"]).strip()
                                         if json_g.get("retirado_por"):
                                             persona_retiro_detectada = str(json_g["retirado_por"]).strip()
                                             
-                                        items_g = json_g.get("despachos") or json_g.get("articulos") or json_g.get("items") or []
+                                        items_g = json_g.get("articulos") or json_g.get("despachos") or json_g.get("items") or []
                                         if isinstance(json_g, list):
                                             items_g = json_g
                                             
@@ -1047,18 +1096,11 @@ if st.session_state['rol'] == "ADMIN":
                                             palabras = [w for w in re.findall(r'[A-ZÁÉÍÓÚÑ]{4,}', d_desc) if w not in ["PARA", "TIPO", "PAPEL"]]
                                             for p in palabras:
                                                 ai_despachos[p] = d_cant
-                                                
-                                        ai_exito = True
                                         break
-                                except Exception as e_mod:
-                                    ultimo_error = str(e_mod)
+                                except Exception:
                                     continue
-                                    
-                            if not ai_exito and consecutivo_detectado != "051-2026":
-                                st.warning(f"ℹ️ Nota de IA: {ultimo_error}")
                     except Exception as e_ai:
-                        if consecutivo_detectado != "051-2026":
-                            st.caption(f"ℹ️ Nota visual: {e_ai}")
+                        st.caption(f"ℹ️ Nota de análisis visual: {e_ai}")
 
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
@@ -1151,15 +1193,11 @@ if st.session_state['rol'] == "ADMIN":
                     st.success(f"🎉 ¡Despacho del Pedimento #{consecutivo_final} registrado con éxito! Se cotejó contra lo pedido y se actualizaron los inventarios.")
 
     # ===============================================================
-    # TAB 4: INFORMES GENERALES (INTERACTIVO, RENOMBRADO Y REGENERACIÓN)
-    # ===============================================================
-
-        # ===============================================================
-    # TAB 4: INFORMES GENERALES (EDICIÓN DE ARTÍCULOS, NÚMEROS Y BORRADO)
+    # TAB 4: INFORMES GENERALES (INTERACTIVO Y CON REGENERACIÓN)
     # ===============================================================
     with tab_informes:
         st.header("📊 Informes Generales y Diagnóstico de Bodega")
-        st.caption("Lista consolidada por pedimento. Haga clic sobre cualquier pedimento para desplegar sus artículos, editarlos o regenerar su PDF:")
+        st.caption("Lista consolidada por pedimento. Haga clic sobre cualquier pedimento para desplegar sus artículos o regenerar su PDF:")
 
         conn = sqlite3.connect("database.db")
         
@@ -1225,7 +1263,6 @@ if st.session_state['rol'] == "ADMIN":
                     c_det3.write(f"📅 **Fecha:** {fecha_ped}")
                     c_det4.write(f"🏷️ **Estado:** {estado_gen}")
 
-                    # 1. EDITAR ARTÍCULOS O CANTIDADES SOLICITADAS
                     st.write("**📋 Editar Insumos Solicitados en este Pedimento:**")
                     st.caption("Modifique la cantidad haciendo doble clic o marque '❌ Borrar' para quitar un artículo. Presione Guardar para actualizar:")
                     
@@ -1264,63 +1301,65 @@ if st.session_state['rol'] == "ADMIN":
                         key=f"editor_insumos_{ped_id}"
                     )
                     
-                    if st.button("💾 Guardar Cambios de la Tabla y Regenerar PDF", key=f"btn_save_insumos_{ped_id}"):
-                        conn_upd = sqlite3.connect("database.db")
-                        c_upd = conn_upd.cursor()
-                        items_modificados = False
-                        
-                        for _, row_edit in df_editado.iterrows():
-                            id_sol = int(row_edit["_id"])
-                            if row_edit["❌ Borrar"]:
-                                c_upd.execute("DELETE FROM solicitudes WHERE id = ?", (id_sol,))
-                                items_modificados = True
-                            else:
-                                nueva_cant = int(row_edit["Cant. Solicitada"])
-                                c_upd.execute("SELECT cantidad, cantidad_despachada FROM solicitudes WHERE id = ?", (id_sol,))
-                                r_actual = c_upd.fetchone()
-                                if r_actual and r_actual[0] != nueva_cant:
-                                    cant_desp = r_actual[1]
-                                    if cant_desp is not None:
-                                        nueva_dif = nueva_cant - cant_desp
-                                        c_upd.execute("UPDATE solicitudes SET cantidad = ?, diferencia = ? WHERE id = ?", (nueva_cant, nueva_dif, id_sol))
-                                    else:
-                                        c_upd.execute("UPDATE solicitudes SET cantidad = ? WHERE id = ?", (nueva_cant, id_sol))
+                    col_save_art, col_add_space = st.columns([2, 1])
+                    with col_save_art:
+                        if st.button("💾 Guardar Cambios de la Tabla y Regenerar PDF", key=f"btn_save_insumos_{ped_id}"):
+                            conn_upd = sqlite3.connect("database.db")
+                            c_upd = conn_upd.cursor()
+                            items_modificados = False
+                            
+                            for _, row_edit in df_editado.iterrows():
+                                id_sol = int(row_edit["_id"])
+                                if row_edit["❌ Borrar"]:
+                                    c_upd.execute("DELETE FROM solicitudes WHERE id = ?", (id_sol,))
                                     items_modificados = True
-                                    
-                        conn_upd.commit()
-                        
-                        if items_modificados:
-                            c_upd.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_id,))
-                            ids_ped = [r[0] for r in c_upd.fetchall()]
+                                else:
+                                    nueva_cant = int(row_edit["Cant. Solicitada"])
+                                    c_upd.execute("SELECT cantidad, cantidad_despachada FROM solicitudes WHERE id = ?", (id_sol,))
+                                    r_actual = c_upd.fetchone()
+                                    if r_actual and r_actual[0] != nueva_cant:
+                                        cant_desp = r_actual[1]
+                                        if cant_desp is not None:
+                                            nueva_dif = nueva_cant - cant_desp
+                                            c_upd.execute("UPDATE solicitudes SET cantidad = ?, diferencia = ? WHERE id = ?", (nueva_cant, nueva_dif, id_sol))
+                                        else:
+                                            c_upd.execute("UPDATE solicitudes SET cantidad = ? WHERE id = ?", (nueva_cant, id_sol))
+                                        items_modificados = True
+                                        
+                            conn_upd.commit()
                             
-                            if ids_ped:
-                                h_hash = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
-                                _, ruta_exc = generar_formulario_oficial_bys(
-                                    ids_ped,
-                                    "Departamento de Servicios Generales B",
-                                    "Jenier Camacho Picado",
-                                    h_hash,
-                                    consecutivo_forzado=ped_id
-                                )
-                                ruta_pdf_out = ruta_exc.replace(".xlsx", ".pdf")
-                                exportar_excel_a_pdf(ruta_exc, ruta_pdf_out)
-                                st.success("¡Artículos actualizados y PDF regenerado correctamente!")
+                            if items_modificados:
+                                c_upd.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_id,))
+                                ids_ped = [r[0] for r in c_upd.fetchall()]
+                                
+                                if ids_ped:
+                                    h_hash = hashlib.sha256(str(datetime.now()).encode()).hexdigest()
+                                    _, ruta_exc = generar_formulario_oficial_bys(
+                                        ids_ped,
+                                        "Departamento de Servicios Generales B",
+                                        "Jenier Camacho Picado",
+                                        h_hash,
+                                        consecutivo_forzado=ped_id
+                                    )
+                                    ruta_pdf_out = ruta_exc.replace(".xlsx", ".pdf")
+                                    exportar_excel_a_pdf(ruta_exc, ruta_pdf_out)
+                                    st.success("¡Artículos actualizados y PDF regenerado correctamente!")
+                                else:
+                                    p_pdf = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf")
+                                    p_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx")
+                                    for p_file in [p_pdf, p_xlsx]:
+                                        if os.path.exists(p_file):
+                                            try: os.remove(p_file)
+                                            except Exception: pass
+                                    st.warning("Se eliminaron todos los artículos de este pedimento.")
                             else:
-                                p_pdf = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf")
-                                p_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx")
-                                for p_file in [p_pdf, p_xlsx]:
-                                    if os.path.exists(p_file):
-                                        try: os.remove(p_file)
-                                        except Exception: pass
-                                st.warning("Se eliminaron todos los artículos de este pedimento.")
-                        else:
-                            st.info("No se detectaron cambios en los artículos.")
-                            
-                        conn_upd.close()
-                        time.sleep(1)
-                        st.rerun()
+                                st.info("No se detectaron cambios en los artículos.")
+                                
+                            conn_upd.close()
+                            time.sleep(1)
+                            st.rerun()
 
-                    # NUEVA SECCIÓN: AGREGAR O REEMPLAZAR POR OTRO ÍTEM / INSUMO
+                    # NUEVA SECCIÓN: AGREGAR O REEMPLAZAR POR OTRO INSUMO
                     st.markdown("---")
                     st.write("**➕ Agregar o Cambiar por otro Insumo a este Pedimento:**")
                     st.caption("Seleccione el artículo que desea agregar (por ejemplo otro tipo de papel) y su cantidad:")
@@ -1353,6 +1392,7 @@ if st.session_state['rol'] == "ADMIN":
                             
                             conn_ins = sqlite3.connect("database.db")
                             c_ins = conn_ins.cursor()
+                            # Obtener el funcionario_id de este pedimento
                             c_ins.execute("SELECT funcionario_id FROM solicitudes WHERE consecutivo = ? LIMIT 1", (ped_id,))
                             r_func = c_ins.fetchone()
                             f_id = r_func[0] if r_func else 1
@@ -1365,6 +1405,7 @@ if st.session_state['rol'] == "ADMIN":
                             """, (f_id, cod_nuevo, int(nueva_cant_sel), int(nueva_cant_sel), ped_id))
                             conn_ins.commit()
                             
+                            # Regenerar PDF oficial con el nuevo artículo incluido
                             c_ins.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (ped_id,))
                             ids_ped_actualizados = [r[0] for r in c_ins.fetchall()]
                             conn_ins.close()
@@ -1384,7 +1425,6 @@ if st.session_state['rol'] == "ADMIN":
                             st.success(f"¡Se agregó '{nuevo_art_sel}' ({nueva_cant_sel} unidades) y se regeneró el PDF!")
                             time.sleep(1)
                             st.rerun()
-                    # 2. CAMBIAR NÚMERO DE PEDIMENTO A MANO
                     st.markdown("---")
                     st.write("**✏️ Cambiar Número de este Pedimento a Mano:**")
                     col_ren1, col_ren2 = st.columns([3, 1])
@@ -1411,11 +1451,15 @@ if st.session_state['rol'] == "ADMIN":
                                 new_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{nuevo_consec_clean}.xlsx")
                                 
                                 if os.path.exists(old_pdf):
-                                    try: os.rename(old_pdf, new_pdf)
-                                    except Exception: pass
+                                    try:
+                                        os.rename(old_pdf, new_pdf)
+                                    except Exception:
+                                        pass
                                 if os.path.exists(old_xlsx):
-                                    try: os.rename(old_xlsx, new_xlsx)
-                                    except Exception: pass
+                                    try:
+                                        os.rename(old_xlsx, new_xlsx)
+                                    except Exception:
+                                        pass
 
                                 old_scan = os.path.join("pedimentos_escaneados", f"Escaneado_{ped_id}.pdf")
                                 new_scan = os.path.join("pedimentos_escaneados", f"Escaneado_{nuevo_consec_clean}.pdf")
@@ -1424,7 +1468,8 @@ if st.session_state['rol'] == "ADMIN":
                                         os.rename(old_scan, new_scan)
                                         c_ren.execute("UPDATE solicitudes SET ruta_pdf_escaneado = ? WHERE consecutivo = ?", (new_scan, nuevo_consec_clean))
                                         conn_ren.commit()
-                                    except Exception: pass
+                                    except Exception:
+                                        pass
 
                                 c_ren.execute("SELECT id FROM solicitudes WHERE consecutivo = ? ORDER BY id ASC", (nuevo_consec_clean,))
                                 ids_ren = [r[0] for r in c_ren.fetchall()]
@@ -1446,7 +1491,6 @@ if st.session_state['rol'] == "ADMIN":
                                 time.sleep(1)
                                 st.rerun()
 
-                    # 3. ACCIONES Y DESCARGAS
                     st.markdown("---")
                     st.write("**🛠️ Acciones y Descargas de este Pedimento:**")
                     col_b_act1, col_b_act2, col_b_act3 = st.columns(3)
@@ -1499,7 +1543,6 @@ if st.session_state['rol'] == "ADMIN":
                                     key=f"dl_informe_{ped_id}"
                                 )
 
-                    # 4. ELIMINAR ESTE PEDIMENTO UNO POR UNO
                     st.markdown("---")
                     st.write("🛑 **Eliminar este Pedimento:**")
                     col_del1, col_del2 = st.columns([3, 1])
@@ -1514,14 +1557,14 @@ if st.session_state['rol'] == "ADMIN":
                                 conn_del.commit()
                                 conn_del.close()
                                 
-                                for p_file in [
-                                    os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf"),
-                                    os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx"),
-                                    os.path.join("pedimentos_escaneados", f"Escaneado_{ped_id}.pdf")
-                                ]:
+                                p_pdf = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.pdf")
+                                p_xlsx = os.path.join("pedimentos_generados", f"Pedimento_{ped_id}.xlsx")
+                                p_scan = os.path.join("pedimentos_escaneados", f"Escaneado_{ped_id}.pdf")
+                                for p_file in [p_pdf, p_xlsx, p_scan]:
                                     if os.path.exists(p_file):
-                                        try: os.remove(p_file)
-                                        except Exception: pass
+                                        try:
+                                            os.remove(p_file)
+                                        except: pass
                                 
                                 st.success(f"¡Pedimento #{ped_id} eliminado exitosamente!")
                                 time.sleep(1)
@@ -1530,6 +1573,7 @@ if st.session_state['rol'] == "ADMIN":
                                 st.error("Marque la casilla de confirmación para poder eliminarlo.")
 
         conn.close()
+
     # ===============================================================
     # TAB 5: REGLAS DE FRECUENCIA Y VIDA ÚTIL DE INSUMOS
     # ===============================================================
@@ -1675,6 +1719,7 @@ if st.session_state['rol'] == "ADMIN":
 
         conn.close()
 
+
     # TAB 6: APROBACIÓN DE USUARIOS
     with tab_usuarios:
         st.header("✅ Aprobación de Cuentas de Usuarios")
@@ -1732,20 +1777,6 @@ if st.session_state['rol'] == "ADMIN":
         
         st.dataframe(df_todos_usuarios, use_container_width=True)
         
-        st.write("**Restablecimiento Rápido de Contraseñas:**")
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            if st.button("🔄 Restablecer a TODOS los funcionarios a 'Dinadeco2026*'", key="btn_reset_all_officials"):
-                c_master = conn.cursor()
-                h_def = hashlib.sha256(CLAVE_TEMPORAL_DEFAULT.encode()).hexdigest()
-                for of_u in LISTA_USUARIOS_OFICIALES:
-                    c_master.execute("UPDATE funcionarios SET password=?, debe_cambiar_password=1 WHERE LOWER(TRIM(username))=?", (h_def, of_u["username"].lower()))
-                conn.commit()
-                sync_usuarios_excel()
-                st.success("✅ ¡Se han restablecido todas las cuentas oficiales a la clave temporal 'Dinadeco2026*'!")
-                st.rerun()
-
-        st.markdown("---")
         st.write("**Editar datos, restablecer contraseñas o eliminar un usuario:**")
         user_sel_id = st.selectbox(
             "Seleccione el Usuario a gestionar:", 
@@ -1801,7 +1832,7 @@ if st.session_state['rol'] == "ADMIN":
         conn.close()
 
         st.markdown("---")
-        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos (Para Nuevos Pedidos)")
+        st.subheader("2. Ajuste Manual de Consecutivo de Pedimentos")
         
         num_actual = obtener_ultimo_consecutivo_db()
         anio_actual = datetime.now().year
@@ -1816,6 +1847,7 @@ if st.session_state['rol'] == "ADMIN":
             st.success(f"¡Consecutivo actualizado! El próximo pedimento será el **#{siguiente:03d}-{anio_actual}**.")
             st.rerun()
 
+        st.markdown("---")
         st.markdown("---")
         st.subheader("3. Regenerar Documentos PDF/Excel de Pedimentos Anteriores")
         st.write("Si algún pedimento anterior salió cortado o con errores, selecciónelo aquí para regenerar automáticamente su Excel y PDF sin alterar su número consecutivo:")
@@ -1877,3 +1909,4 @@ if st.session_state['rol'] == "ADMIN":
                 limpiar_historial_y_archivos()
                 st.success("¡El sistema ha sido reinstalado a su estado de fábrica!")
                 st.rerun()
+
