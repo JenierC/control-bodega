@@ -1,4 +1,5 @@
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -20,18 +21,21 @@ def obtener_config_smtp():
 
 def _crear_conexion_smtp(server_host, port, user, password):
     """Establece conexión SMTP adaptativa compatible con puertos 465 (SSL) y 587 (STARTTLS)."""
+    contexto = ssl.create_default_context()
+    user_limpio = user.strip()
+    # Las claves de aplicación de Google funcionan mejor sin los espacios intermedios
+    pass_limpia = password.strip().replace(" ", "")
+
     if port == 465:
-        # Cifrado SSL directo
-        server = smtplib.SMTP_SSL(server_host, port, timeout=25)
+        server = smtplib.SMTP_SSL(server_host, port, context=contexto, timeout=30)
         server.ehlo()
     else:
-        # Puerto 587 / 25 con STARTTLS
-        server = smtplib.SMTP(server_host, port, timeout=25)
+        server = smtplib.SMTP(server_host, port, timeout=30)
         server.ehlo()
-        server.starttls()
+        server.starttls(context=contexto)
         server.ehlo()
-    
-    server.login(user, password)
+
+    server.login(user_limpio, pass_limpia)
     return server
 
 def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_valido, motivo, ruta_pdf, justificacion=""):
@@ -53,7 +57,7 @@ def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_vali
     msg['From'] = user
     msg['To'] = dest_principal
     msg['Cc'] = ", ".join(dest_cc) if isinstance(dest_cc, list) else str(dest_cc)
-    
+
     tag = "[CUMPLE REGLAS]" if es_valido else "[ALERTA / EXCEDE CUOTA]"
     msg['Subject'] = f"{tag} Solicitud de Pedimento #{consecutivo} - Para Firma Digital"
 
@@ -67,10 +71,10 @@ def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_vali
           <p><b>Solicitante:</b> {solicitante}</p>
           <p><b>Dictamen:</b> {motivo}</p>
           {f'<p><b>Justificación:</b> {justificacion}</p>' if justificacion else ''}
-          
+
           <h3>Lista de Artículos Solicitados:</h3>
           <ul>{items_html}</ul>
-          
+
           <hr>
           <p><b>Instrucciones para la Autorización / Firma Digital:</b></p>
           <ol>
@@ -84,7 +88,7 @@ def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_vali
       </body>
     </html>
     """
-    
+
     msg.attach(MIMEText(cuerpo, 'html'))
 
     if os.path.exists(ruta_pdf):
@@ -112,7 +116,7 @@ def enviar_correo_pedimento_firmado(consecutivo, ruta_pdf_firmado, detalle_firma
     password = cfg.get("password", "")
     server_host = cfg.get("server", "smtp.gmail.com")
     port = int(cfg.get("port", 465))
-    
+
     dest_principal = "agomez@dinadeco.go.cr"
     dest_cc = ["jcamacho@dinadeco.go.cr", "agonzalez@dinadeco.go.cr"]
 
@@ -154,7 +158,7 @@ def enviar_correo_pedimento_firmado(consecutivo, ruta_pdf_firmado, detalle_firma
       </body>
     </html>
     """
-    
+
     msg.attach(MIMEText(cuerpo, 'html'))
 
     if os.path.exists(ruta_pdf_firmado):
