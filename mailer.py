@@ -18,6 +18,21 @@ def obtener_config_smtp():
     except Exception:
         return None
 
+def _crear_conexion_smtp(server_host, port, user, password):
+    """Establece conexión SMTP adaptativa compatible con puertos 465 (SSL) y 587 (STARTTLS)."""
+    if port == 465:
+        # Cifrado SSL directo
+        server = smtplib.SMTP_SSL(server_host, port, timeout=25)
+        server.ehlo()
+    else:
+        # Puerto 587 / 25 con STARTTLS
+        server = smtplib.SMTP(server_host, port, timeout=25)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+    
+    server.login(user, password)
+    return server
 
 def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_valido, motivo, ruta_pdf, justificacion=""):
     cfg = obtener_config_smtp()
@@ -27,7 +42,7 @@ def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_vali
     user = cfg.get("user", "")
     password = cfg.get("password", "")
     server_host = cfg.get("server", "smtp.gmail.com")
-    port = int(cfg.get("port", 587))
+    port = int(cfg.get("port", 465))
     dest_principal = cfg.get("destinatario_principal", "agonzalez@dinadeco.go.cr")
     dest_cc = cfg.get("destinatarios_cc", ["ggutierrez@dinadeco.go.cr", "jcamacho@dinadeco.go.cr"])
 
@@ -81,21 +96,14 @@ def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_vali
     todos_destinatarios = [dest_principal] + (dest_cc if isinstance(dest_cc, list) else [dest_cc])
 
     try:
-        server = smtplib.SMTP(server_host, port)
-        server.starttls()
-        server.login(user, password)
+        server = _crear_conexion_smtp(server_host, port, user, password)
         server.sendmail(user, todos_destinatarios, msg.as_string())
         server.quit()
         return True, "Correo enviado exitosamente."
     except Exception as e:
         return False, f"Fallo al conectar con el servidor de correo ({type(e).__name__}): {str(e)}"
 
-
 def enviar_correo_pedimento_firmado(consecutivo, ruta_pdf_firmado, detalle_firma="Firma Digital Verificada"):
-    """
-    Envía el PDF con Firma Digital de BCCR al Encargado de Bodega (agomez@dinadeco.go.cr)
-    con copia a jcamacho@dinadeco.go.cr y agonzalez@dinadeco.go.cr para autorizar despacho.
-    """
     cfg = obtener_config_smtp()
     if not cfg:
         return False, "No se encontró la configuración SMTP."
@@ -103,9 +111,8 @@ def enviar_correo_pedimento_firmado(consecutivo, ruta_pdf_firmado, detalle_firma
     user = cfg.get("user", "")
     password = cfg.get("password", "")
     server_host = cfg.get("server", "smtp.gmail.com")
-    port = int(cfg.get("port", 587))
+    port = int(cfg.get("port", 465))
     
-    # Destinatarios oficiales para la salida de bodega
     dest_principal = "agomez@dinadeco.go.cr"
     dest_cc = ["jcamacho@dinadeco.go.cr", "agonzalez@dinadeco.go.cr"]
 
@@ -159,9 +166,7 @@ def enviar_correo_pedimento_firmado(consecutivo, ruta_pdf_firmado, detalle_firma
     todos_destinatarios = [dest_principal] + dest_cc
 
     try:
-        server = smtplib.SMTP(server_host, port)
-        server.starttls()
-        server.login(user, password)
+        server = _crear_conexion_smtp(server_host, port, user, password)
         server.sendmail(user, todos_destinatarios, msg.as_string())
         server.quit()
         return True, "Correo enviado al encargado de bodega exitosamente."
