@@ -26,6 +26,7 @@ MAX_INACTIVIDAD = 300  # 5 minutos de inactividad
 CLAVE_TEMPORAL_DEFAULT = "Dinadeco2026*"
 
 LISTA_USUARIOS_OFICIALES = [
+    {"nombre": "Jenier Camacho Picado", "email": "jcamacho@dinadeco.go.cr", "username": "jcamacho", "puesto": "Jefatura", "espacio": "Oficina General", "rol": "ADMIN"},
     {"nombre": "Emmanuel Alvarez", "email": "ealvarez@dinadeco.go.cr", "username": "ealvarez", "puesto": "Misceláneo/a", "espacio": "Piso 3 (30%)", "rol": "BASICO"},
     {"nombre": "Ana Orozco Sánchez", "email": "aorozco@dinadeco.go.cr", "username": "aorozco", "puesto": "Misceláneo/a", "espacio": "Piso 1 (30%)", "rol": "BASICO"},
     {"nombre": "Ana Yancy González", "email": "agonzalez@dinadeco.go.cr", "username": "agonzalez", "puesto": "Recepcionista", "espacio": "Oficina General", "rol": "ADMIN"},
