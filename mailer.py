@@ -1,5 +1,6 @@
 import smtplib
 import ssl
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -19,24 +20,56 @@ def obtener_config_smtp():
     except Exception:
         return None
 
-def _crear_conexion_smtp(server_host, port, user, password):
-    """Establece conexión SMTP forzando SSL en Gmail para evitar bloqueos en la nube."""
+def _conectar_smtp_robusto(server_host, user, password, port_config=None):
+    """
+    Establece conexión SMTP forzando IPv4 y alternando entre 465 (SSL) y 587 (STARTTLS).
+    """
     contexto = ssl.create_default_context()
     user_limpio = user.strip()
     pass_limpia = password.strip().replace(" ", "")
 
-    # Forzar puerto 465 con SSL si es Gmail, sin importar lo que diga Secrets
-    if "gmail" in server_host.lower() or port == 465:
-        server = smtplib.SMTP_SSL(server_host, 465, context=contexto, timeout=30)
-        server.ehlo()
-    else:
-        server = smtplib.SMTP(server_host, port, timeout=30)
-        server.ehlo()
-        server.starttls(context=contexto)
-        server.ehlo()
+    # Forzar resolución IPv4 para evitar caídas en Streamlit Cloud / AWS
+    orig_getaddrinfo = socket.getaddrinfo
+    def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+        return orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
 
-    server.login(user_limpio, pass_limpia)
-    return server
+    socket.getaddrinfo = getaddrinfo_ipv4
+
+    # Probar primero 465 (SSL directo) que no sufre desconexiones en la nube
+    estrategias = [(465, True), (587, False)]
+
+    ultimo_error = None
+    server = None
+
+    try:
+        for p, usar_ssl in estrategias:
+            try:
+                if usar_ssl:
+                    server = smtplib.SMTP_SSL(server_host, p, context=contexto, timeout=25)
+                    server.ehlo()
+                else:
+                    server = smtplib.SMTP(server_host, p, timeout=25)
+                    server.ehlo()
+                    server.starttls(context=contexto)
+                    server.ehlo()
+
+                server.login(user_limpio, pass_limpia)
+                return server
+            except Exception as err:
+                ultimo_error = err
+                if server:
+                    try:
+                        server.close()
+                    except Exception:
+                        pass
+                server = None
+                continue
+    finally:
+        socket.getaddrinfo = orig_getaddrinfo
+
+    if ultimo_error:
+        raise ultimo_error
+    raise RuntimeError("No fue posible conectar al servidor de correo.")
 
 def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_valido, motivo, ruta_pdf, justificacion=""):
     cfg = obtener_config_smtp()
@@ -46,7 +79,11 @@ def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_vali
     user = cfg.get("user", "")
     password = cfg.get("password", "")
     server_host = cfg.get("server", "smtp.gmail.com")
-    port = int(cfg.get("port", 465))
+    try:
+        port_cfg = int(cfg.get("port", 465))
+    except Exception:
+        port_cfg = 465
+
     dest_principal = cfg.get("destinatario_principal", "agonzalez@dinadeco.go.cr")
     dest_cc = cfg.get("destinatarios_cc", ["ggutierrez@dinadeco.go.cr", "jcamacho@dinadeco.go.cr"])
 
@@ -100,7 +137,7 @@ def enviar_correo_con_pdf_adjunto(consecutivo, lista_items, solicitante, es_vali
     todos_destinatarios = [dest_principal] + (dest_cc if isinstance(dest_cc, list) else [dest_cc])
 
     try:
-        server = _crear_conexion_smtp(server_host, port, user, password)
+        server = _conectar_smtp_robusto(server_host, user, password, port_cfg)
         server.sendmail(user, todos_destinatarios, msg.as_string())
         server.quit()
         return True, "Correo enviado exitosamente."
@@ -115,7 +152,10 @@ def enviar_correo_pedimento_firmado(consecutivo, ruta_pdf_firmado, detalle_firma
     user = cfg.get("user", "")
     password = cfg.get("password", "")
     server_host = cfg.get("server", "smtp.gmail.com")
-    port = int(cfg.get("port", 465))
+    try:
+        port_cfg = int(cfg.get("port", 465))
+    except Exception:
+        port_cfg = 465
 
     dest_principal = "agomez@dinadeco.go.cr"
     dest_cc = ["jcamacho@dinadeco.go.cr", "agonzalez@dinadeco.go.cr"]
@@ -170,7 +210,7 @@ def enviar_correo_pedimento_firmado(consecutivo, ruta_pdf_firmado, detalle_firma
     todos_destinatarios = [dest_principal] + dest_cc
 
     try:
-        server = _crear_conexion_smtp(server_host, port, user, password)
+        server = _conectar_smtp_robusto(server_host, user, password, port_cfg)
         server.sendmail(user, todos_destinatarios, msg.as_string())
         server.quit()
         return True, "Correo enviado al encargado de bodega exitosamente."
