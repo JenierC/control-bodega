@@ -20,14 +20,14 @@ def obtener_config_smtp():
         return None
 
 def _crear_conexion_smtp(server_host, port, user, password):
-    """Establece conexión SMTP adaptativa compatible con puertos 465 (SSL) y 587 (STARTTLS)."""
+    """Establece conexión SMTP forzando SSL en Gmail para evitar bloqueos en la nube."""
     contexto = ssl.create_default_context()
     user_limpio = user.strip()
-    # Las claves de aplicación de Google funcionan mejor sin los espacios intermedios
     pass_limpia = password.strip().replace(" ", "")
 
-    if port == 465:
-        server = smtplib.SMTP_SSL(server_host, port, context=contexto, timeout=30)
+    # Forzar puerto 465 con SSL si es Gmail, sin importar lo que diga Secrets
+    if "gmail" in server_host.lower() or port == 465:
+        server = smtplib.SMTP_SSL(server_host, 465, context=contexto, timeout=30)
         server.ehlo()
     else:
         server = smtplib.SMTP(server_host, port, timeout=30)
