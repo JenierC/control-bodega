@@ -27,6 +27,7 @@ CLAVE_TEMPORAL_DEFAULT = "Dinadeco2026*"
 
 LISTA_USUARIOS_OFICIALES = [
     {"nombre": "Jenier Camacho Picado", "email": "jcamacho@dinadeco.go.cr", "username": "jcamacho", "puesto": "Jefatura", "espacio": "Oficina General", "rol": "ADMIN"},
+    {"nombre": "Jenier Camacho", "email": "jcamacho@dinadeco.go.cr", "username": "jenier", "puesto": "Jefatura", "espacio": "Oficina General", "rol": "ADMIN"},
     {"nombre": "Emmanuel Alvarez", "email": "ealvarez@dinadeco.go.cr", "username": "ealvarez", "puesto": "Misceláneo/a", "espacio": "Piso 3 (30%)", "rol": "BASICO"},
     {"nombre": "Ana Orozco Sánchez", "email": "aorozco@dinadeco.go.cr", "username": "aorozco", "puesto": "Misceláneo/a", "espacio": "Piso 1 (30%)", "rol": "BASICO"},
     {"nombre": "Ana Yancy González", "email": "agonzalez@dinadeco.go.cr", "username": "agonzalez", "puesto": "Recepcionista", "espacio": "Oficina General", "rol": "ADMIN"},
@@ -157,7 +158,8 @@ def extraer_datos_pedimento_pdf(pdf_bytes, filename):
     for page in reader.pages:
         t = page.extract_text()
         if t:
-            full_text += t + "\n"
+            full_text += t + "
+"
             
     match_cons = re.search(r'Consecutivo:\s*([0-9]{3}-[0-9]{4})', full_text, re.IGNORECASE)
     if not match_cons:
@@ -295,6 +297,7 @@ def logout_inactividad():
     st.session_state['last_activity'] = None
     st.session_state['debe_cambiar_password'] = False
     st.session_state['articulos_manuales_tab2'] = []
+    st.session_state['mostrar_alerta_respaldo'] = False
     st.query_params.clear()
 
 def obtener_timestamp_query():
@@ -422,6 +425,11 @@ def login(user, pwd):
             st.session_state['rol'] = result[2]
             st.session_state['debe_cambiar_password'] = bool(result[4])
             st.session_state['last_activity'] = time.time()
+            
+            # NUEVO: Si es administrador, le recordamos descargar el respaldo
+            if result[2] == "ADMIN":
+                st.session_state['mostrar_alerta_respaldo'] = True
+                
             st.query_params['u'] = result[1]
             st.query_params['r'] = result[2]
             st.query_params['fid'] = str(result[0])
@@ -585,6 +593,31 @@ if st.sidebar.button("🔴 Cerrar Sesión", type="primary", use_container_width=
 
 st.sidebar.markdown("---")
 
+# ===================================================================
+# ALERTA DE RESPALDO AUTOMÁTICO PARA ADMINISTRADORES
+# ===================================================================
+if st.session_state.get('mostrar_alerta_respaldo', False) and st.session_state['rol'] == "ADMIN":
+    st.success("👋 ¡Bienvenido/a de nuevo! Por seguridad de la información en la nube, por favor descargue el respaldo de la base de datos de hoy antes de continuar.")
+    
+    if os.path.exists("database.db"):
+        with open("database.db", "rb") as f_db:
+            if st.download_button(
+                label="💾 Descargar Respaldo Actual (database.db)",
+                data=f_db.read(),
+                file_name=f"Respaldo_Bodega_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
+                mime="application/x-sqlite3",
+                type="primary",
+                use_container_width=True
+            ):
+                st.session_state['mostrar_alerta_respaldo'] = False
+                st.rerun()
+    
+    if st.button("Continuar sin descargar (No recomendado)", type="secondary"):
+        st.session_state['mostrar_alerta_respaldo'] = False
+        st.rerun()
+    
+    st.markdown("---")
+
 if st.session_state['rol'] == "ADMIN":
     tabs = st.tabs([
         "📝 1. Pedimentos", 
@@ -670,7 +703,9 @@ with tab_pedimentos:
                 if dias_transcurridos < vida_util:
                     bloqueado = True
                     dias_faltantes = vida_util - dias_transcurridos
-                    msg_bloqueo = f"⛔ **Frecuencia de Entrega No Cumplida:**\nEste artículo se le despachó físicamente el **{last_date.strftime('%d/%m/%Y')}**.\nDebe esperar **{dias_faltantes} días** más para volver a solicitarlo (Vida útil reglamentaria: {vida_util} días)."
+                    msg_bloqueo = f"⛔ **Frecuencia de Entrega No Cumplida:**
+Este artículo se le despachó físicamente el **{last_date.strftime('%d/%m/%Y')}**.
+Debe esperar **{dias_faltantes} días** más para volver a solicitarlo (Vida útil reglamentaria: {vida_util} días)."
             except Exception:
                 pass
                 
@@ -1892,6 +1927,38 @@ if st.session_state['rol'] == "ADMIN":
             st.info("No hay pedimentos registrados para regenerar.")
 
         st.markdown("---")
+        
+        # NUEVO BLOQUE: Copia de Seguridad y Restauración de Base de Datos
+        st.subheader("💾 Copia de Seguridad y Restauración de Base de Datos")
+        col_bk1, col_bk2 = st.columns(2)
+        
+        with col_bk1:
+            st.write("**Descargar Respaldo Actual:**")
+            if os.path.exists("database.db"):
+                with open("database.db", "rb") as f_db:
+                    st.download_button(
+                        label="📥 Descargar database.db a mi PC",
+                        data=f_db.read(),
+                        file_name=f"database_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db",
+                        mime="application/x-sqlite3",
+                        key="btn_download_db_backup"
+                    )
+            else:
+                st.info("No se encontró archivo de base de datos para respaldar.")
+
+        with col_bk2:
+            st.write("**Restaurar Respaldo Guardado:**")
+            db_subida = st.file_uploader("Subir archivo database.db para restaurar:", type=["db", "sqlite"], key="uploader_restore_db")
+            if db_subida is not None:
+                if st.button("♻️ Restaurar Base de Datos Ahora", type="primary"):
+                    with open("database.db", "wb") as f_out:
+                        f_out.write(db_subida.getbuffer())
+                    st.success("¡Base de datos restaurada con éxito con todos los pedimentos históricos!")
+                    time.sleep(1)
+                    st.rerun()
+
+        st.markdown("---")
+        
         st.subheader("4. Limpieza de Pedimentos y Archivos de Prueba")
         st.write("Elimina la base de datos de solicitudes y **elimina todos los archivos PDF/Excel de la lista de firmas pendientes y escaneos**.")
         
